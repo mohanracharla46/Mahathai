@@ -40,7 +40,7 @@ const normalizePricedOption = (option) => {
 };
 
 export default function CustomizeModal({ item, cart = {}, onClose, onConfirm, onAddSuggestion, onRemoveSuggestion }) {
-  const [spice, setSpice] = useState('Medium');
+  const [spice, setSpice] = useState(null);
   const [selectedAddons, setSelectedAddons] = useState([]);
   const [requirements, setRequirements] = useState('');
   const itemSizeOptions = normalizeOptionArray(item.size_options);
@@ -54,24 +54,15 @@ export default function CustomizeModal({ item, cart = {}, onClose, onConfirm, on
     : [];
   const [selectedProtein, setSelectedProtein] = useState(proteinOptions[0] || null);
 
-  const defaultSpiceLevels = ['Mild', 'Medium', 'Spicy', 'More Spicy'];
-  const spiceLevels = Array.isArray(item.spice_options) && item.spice_options.length > 0
-    ? item.spice_options
-    : defaultSpiceLevels;
+  // Only show spice levels if admin has configured them for this item
+  const itemSpiceOptions = normalizeOptionArray(item.spice_options);
+  const spiceLevels = itemSpiceOptions.length > 0 ? itemSpiceOptions : [];
 
-  const defaultAddonOptions = [
-    { name: 'Extra Vegetables', price: 1.50 },
-    { name: 'Extra Tofu', price: 2.00 },
-    { name: 'Extra Chicken', price: 2.50 },
-    { name: 'Extra Beef', price: 3.00 },
-    { name: 'Extra Shrimp', price: 3.50 },
-    { name: 'Fried Egg', price: 1.50 },
-    { name: 'Jasmine Rice', price: 2.00 }
-  ];
+  // Only show add-ons if admin has configured them for this item
   const itemAddonOptions = normalizeOptionArray(item.addon_options);
   const addonOptions = itemAddonOptions.length > 0
     ? itemAddonOptions.map(normalizePricedOption).filter(Boolean)
-    : defaultAddonOptions;
+    : [];
 
   const handleToggleAddon = (addon) => {
     setSelectedAddons((prev) => {
@@ -179,39 +170,41 @@ export default function CustomizeModal({ item, cart = {}, onClose, onConfirm, on
           </div>
         </div>
 
-        {/* Spice Level */}
-        <div>
-          <h4 style={{ fontFamily: 'var(--font-sans)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-dark)', marginBottom: '0.85rem' }}>
-            Spice Level
-          </h4>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
-            {spiceLevels.map((lvl) => {
-              const active = spice === lvl;
-              return (
-                <button
-                  key={lvl}
-                  type="button"
-                  onClick={() => setSpice(lvl)}
-                  style={{
-                    padding: '0.6rem 0.5rem',
-                    borderRadius: '6px',
-                    border: `1.5px solid ${active ? 'var(--gold-antique)' : 'var(--border-light)'}`,
-                    backgroundColor: active ? 'var(--gold-light)' : 'transparent',
-                    color: 'var(--text-dark)',
-                    fontFamily: 'var(--font-sans)',
-                    fontSize: '0.8rem',
-                    fontWeight: active ? 600 : 400,
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    textAlign: 'center'
-                  }}
-                >
-                  {lvl}
-                </button>
-              );
-            })}
+        {/* Spice Level — only shown if admin configured spice options for this item */}
+        {spiceLevels.length > 0 && (
+          <div>
+            <h4 style={{ fontFamily: 'var(--font-sans)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-dark)', marginBottom: '0.85rem' }}>
+              Spice Level
+            </h4>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem' }}>
+              {spiceLevels.map((lvl) => {
+                const active = spice === lvl;
+                return (
+                  <button
+                    key={lvl}
+                    type="button"
+                    onClick={() => setSpice(lvl)}
+                    style={{
+                      padding: '0.6rem 0.5rem',
+                      borderRadius: '6px',
+                      border: `1.5px solid ${active ? 'var(--gold-antique)' : 'var(--border-light)'}`,
+                      backgroundColor: active ? 'var(--gold-light)' : 'transparent',
+                      color: 'var(--text-dark)',
+                      fontFamily: 'var(--font-sans)',
+                      fontSize: '0.8rem',
+                      fontWeight: active ? 600 : 400,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      textAlign: 'center'
+                    }}
+                  >
+                    {lvl}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
         {proteinOptions.length > 0 && (
           <div>
@@ -252,57 +245,59 @@ export default function CustomizeModal({ item, cart = {}, onClose, onConfirm, on
           </div>
         )}
 
-        {/* Add-ons */}
-        <div>
-          <h4 style={{ fontFamily: 'var(--font-sans)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-dark)', marginBottom: '0.85rem' }}>
-            Add-ons (Optional)
-          </h4>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-            {addonOptions.map((addon) => {
-              const isSelected = selectedAddons.some((a) => a.name === addon.name);
-              return (
-                <div
-                  key={addon.name}
-                  onClick={() => handleToggleAddon(addon)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '0.75rem 1rem',
-                    borderRadius: '8px',
-                    backgroundColor: isSelected ? 'var(--gold-light)' : 'var(--canvas-secondary)',
-                    border: `1px solid ${isSelected ? 'var(--gold-antique)' : 'var(--border-light)'}`,
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <div style={{
-                      width: '16px',
-                      height: '16px',
-                      borderRadius: '3px',
-                      border: `1px solid ${isSelected ? 'var(--gold-antique)' : 'var(--border-medium)'}`,
-                      backgroundColor: isSelected ? 'var(--gold-antique)' : 'transparent',
+        {/* Add-ons — only shown if admin configured addon options for this item */}
+        {addonOptions.length > 0 && (
+          <div>
+            <h4 style={{ fontFamily: 'var(--font-sans)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-dark)', marginBottom: '0.85rem' }}>
+              Add-ons (Optional)
+            </h4>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              {addonOptions.map((addon) => {
+                const isSelected = selectedAddons.some((a) => a.name === addon.name);
+                return (
+                  <div
+                    key={addon.name}
+                    onClick={() => handleToggleAddon(addon)}
+                    style={{
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center',
-                      color: 'var(--text-dark)'
-                    }}>
-                      {isSelected && <Check size={10} strokeWidth={3} />}
+                      justifyContent: 'space-between',
+                      padding: '0.75rem 1rem',
+                      borderRadius: '8px',
+                      backgroundColor: isSelected ? 'var(--gold-light)' : 'var(--canvas-secondary)',
+                      border: `1px solid ${isSelected ? 'var(--gold-antique)' : 'var(--border-light)'}`,
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <div style={{
+                        width: '16px',
+                        height: '16px',
+                        borderRadius: '3px',
+                        border: `1px solid ${isSelected ? 'var(--gold-antique)' : 'var(--border-medium)'}`,
+                        backgroundColor: isSelected ? 'var(--gold-antique)' : 'transparent',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: 'var(--text-dark)'
+                      }}>
+                        {isSelected && <Check size={10} strokeWidth={3} />}
+                      </div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-dark)', fontWeight: isSelected ? 600 : 400 }}>
+                        {addon.name}
+                      </span>
                     </div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-dark)', fontWeight: isSelected ? 600 : 400 }}>
-                      {addon.name}
+                    <span style={{ fontSize: '0.75rem', color: isSelected ? 'var(--text-dark)' : 'var(--text-muted)', fontWeight: 600 }}>
+                      +${addon.price.toFixed(2)}
                     </span>
                   </div>
-                  <span style={{ fontSize: '0.75rem', color: isSelected ? 'var(--text-dark)' : 'var(--text-muted)', fontWeight: 600 }}>
-                    +${addon.price.toFixed(2)}
-                  </span>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
         {sizeOptions.length > 0 && (
           <div>

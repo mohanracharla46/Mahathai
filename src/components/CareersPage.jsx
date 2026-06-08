@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Briefcase, Clock, MapPin, ChevronRight, Send, Mail } from 'lucide-react';
+import { createCareerApplication, getCareerApplications, getCareerPositions } from '../lib/api';
 
-const openPositions = [
+const defaultOpenPositions = [
   {
     id: 'pos-1',
     title: 'Head Chef – Thai Cuisine',
@@ -59,22 +60,223 @@ const openPositions = [
   }
 ];
 
-export default function CareersPage({ onOpenReservation }) {
+const normalizeRequirements = (requirements) => {
+  if (Array.isArray(requirements)) return requirements.filter(Boolean);
+  if (!requirements) return [];
+  if (typeof requirements === 'string') {
+    try {
+      const parsed = JSON.parse(requirements);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch (error) {
+      // Plain text requirements are supported below.
+    }
+    return requirements
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+};
+
+const normalizeCareerPosition = (position, index = 0) => ({
+  id: position.id || position.slug || `pos-${index + 1}`,
+  title: position.title || position.position || position.name || 'Open Position',
+  department: position.department || position.team || 'Restaurant',
+  type: position.type || position.employment_type || position.job_type || 'Full-Time',
+  location: position.location || 'Bangkok, Thailand',
+  description: position.description || position.summary || '',
+  requirements: normalizeRequirements(position.requirements || position.qualifications),
+  isActive: position.is_active ?? position.active ?? true
+});
+
+const APPLICATIONS_PER_PAGE = 5;
+
+const normalizeCareerApplication = (application) => ({
+  id: application.id,
+  name: application.name || application.full_name || application.applicant_name || 'Applicant',
+  full_name: application.full_name || application.name || application.applicant_name || 'Applicant',
+  email: application.email || application.applicant_email || '',
+  phone: application.phone || application.phone_number || '',
+  position: application.position || application.position_applied || application.job_title || 'General Application',
+  experience: application.experience_level || application.experience || application.years_experience || 'N/A',
+  message: application.about || application.message || application.cover_letter || application.notes || '',
+  status: application.status
+    ? String(application.status).charAt(0).toUpperCase() + String(application.status).slice(1).toLowerCase()
+    : 'Pending',
+  created_at: application.created_at || application.date || new Date().toISOString(),
+  date: application.created_at
+    ? new Date(application.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : application.date || ''
+});
+
+const normalizeMatchValue = (value) => String(value || '').trim().toLowerCase();
+
+export default function CareersPage({ onOpenReservation, currentUser = null }) {
   const [expandedJob, setExpandedJob] = useState(null);
+  const [careerPositions, setCareerPositions] = useState(defaultOpenPositions);
   const [formData, setFormData] = useState({
     name: '', email: '', phone: '', position: '', experience: '', message: ''
   });
   const [submitted, setSubmitted] = useState(false);
+  const [userApplications, setUserApplications] = useState([]);
+  const [applicationsPage, setApplicationsPage] = useState(1);
+
+  useEffect(() => {
+    let ignore = false;
+
+    const savedPositions = localStorage.getItem('maha_career_positions');
+    if (savedPositions) {
+      try {
+        const normalizedSaved = JSON.parse(savedPositions)
+          .map(normalizeCareerPosition)
+          .filter((position) => position.isActive);
+        if (normalizedSaved.length > 0) {
+          setCareerPositions(normalizedSaved);
+        }
+      } catch (error) {
+        setCareerPositions(defaultOpenPositions);
+      }
+    }
+
+    getCareerPositions()
+      .then((positions) => {
+        if (ignore) return;
+        const rows = positions.data || positions;
+        const normalized = Array.isArray(rows)
+          ? rows.map(normalizeCareerPosition).filter((position) => position.isActive)
+          : [];
+        if (normalized.length > 0) {
+          setCareerPositions(normalized);
+          localStorage.setItem('maha_career_positions', JSON.stringify(normalized));
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load backend career positions.', error);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  const openPositions = useMemo(() => careerPositions, [careerPositions]);
+  const userEmail = normalizeMatchValue(currentUser?.email);
+  const userPhone = normalizeMatchValue(currentUser?.phone);
+
+  const loadUserApplications = async () => {
+    const savedApplications = JSON.parse(localStorage.getItem('maha_career_applications') || '[]')
+      .map(normalizeCareerApplication);
+
+    const matchesUser = (application) => (
+      (userEmail && normalizeMatchValue(application.email) === userEmail) ||
+      (userPhone && normalizeMatchValue(application.phone) === userPhone)
+    );
+
+    setUserApplications(savedApplications.filter(matchesUser));
+
+    try {
+      const apiApplications = await getCareerApplications();
+      const rows = apiApplications?.data || apiApplications;
+      const normalizedApplications = Array.isArray(rows)
+        ? rows.map(normalizeCareerApplication)
+        : [];
+      const matchedApplications = normalizedApplications.filter(matchesUser);
+      setUserApplications(matchedApplications);
+    } catch (error) {
+      console.error('Failed to load user career applications.', error);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      name: currentUser.name || '',
+      email: currentUser.email || '',
+      phone: currentUser.phone || ''
+    }));
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setUserApplications([]);
+      return;
+    }
+
+    loadUserApplications();
+
+    const handleStorageUpdate = (event) => {
+      if (event.key === 'maha_career_applications') {
+        loadUserApplications();
+      }
+    };
+
+    window.addEventListener('storage', handleStorageUpdate);
+    return () => window.removeEventListener('storage', handleStorageUpdate);
+  }, [currentUser?.email, currentUser?.phone]);
+
+  useEffect(() => {
+    setApplicationsPage(1);
+  }, [userApplications.length]);
+
+  const applicationsTotalPages = Math.max(1, Math.ceil(userApplications.length / APPLICATIONS_PER_PAGE));
+  const visibleApplications = userApplications.slice(
+    (applicationsPage - 1) * APPLICATIONS_PER_PAGE,
+    applicationsPage * APPLICATIONS_PER_PAGE
+  );
 
   const handleChange = (e) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    const apiApplication = {
+      full_name: formData.name,
+      email: formData.email,
+      phone: formData.phone,
+      position: formData.position,
+      experience_level: formData.experience,
+      about: formData.message,
+      status: 'pending'
+    };
+
+    const newApplication = {
+      id: `career-${Date.now()}`,
+      name: formData.name,
+      ...apiApplication,
+      experience: formData.experience,
+      message: formData.message,
+      created_at: new Date().toISOString()
+    };
+
+    try {
+      const savedApplication = await createCareerApplication(apiApplication);
+      const globalApplications = JSON.parse(localStorage.getItem('maha_career_applications') || '[]');
+      globalApplications.unshift(savedApplication?.id ? savedApplication : newApplication);
+      localStorage.setItem('maha_career_applications', JSON.stringify(globalApplications));
+      const normalizedApplication = normalizeCareerApplication(savedApplication?.id ? savedApplication : newApplication);
+      setUserApplications((prev) => [normalizedApplication, ...prev]);
+      setApplicationsPage(1);
+    } catch (error) {
+      console.error('Failed to sync career application with backend.', error);
+      const globalApplications = JSON.parse(localStorage.getItem('maha_career_applications') || '[]');
+      globalApplications.unshift(newApplication);
+      localStorage.setItem('maha_career_applications', JSON.stringify(globalApplications));
+      setUserApplications((prev) => [normalizeCareerApplication(newApplication), ...prev]);
+      setApplicationsPage(1);
+    }
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 5000);
-    setFormData({ name: '', email: '', phone: '', position: '', experience: '', message: '' });
+    setFormData({
+      name: currentUser?.name || '',
+      email: currentUser?.email || '',
+      phone: currentUser?.phone || '',
+      position: '',
+      experience: '',
+      message: ''
+    });
   };
 
   const inputStyle = {
@@ -598,6 +800,177 @@ export default function CareersPage({ onOpenReservation }) {
               </button>
             </motion.form>
           )}
+        </div>
+      </section>
+
+      <section style={{
+        padding: '0 2rem 5rem',
+        backgroundColor: 'var(--canvas-secondary)'
+      }}>
+        <div className="container" style={{ maxWidth: '900px', margin: '0 auto' }}>
+          <div style={{
+            backgroundColor: 'var(--canvas-primary)',
+            border: '1px solid var(--border-light)',
+            borderRadius: '12px',
+            overflow: 'hidden'
+          }}>
+            <div style={{
+              padding: '1.5rem',
+              borderBottom: '1px solid var(--border-light)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: '1rem',
+              alignItems: 'center',
+              flexWrap: 'wrap'
+            }}>
+              <div>
+                <span style={{
+                  display: 'block',
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.22em',
+                  textTransform: 'uppercase',
+                  color: 'var(--gold-antique)',
+                  marginBottom: '0.35rem'
+                }}>
+                  APPLICATION HISTORY
+                </span>
+                <h3 style={{
+                  fontFamily: 'var(--font-heading)',
+                  fontSize: '1.35rem',
+                  fontWeight: 300,
+                  color: 'var(--text-dark)'
+                }}>
+                  My Career Applications
+                </h3>
+              </div>
+              {currentUser && (
+                <span style={{
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.76rem',
+                  color: 'var(--text-muted)'
+                }}>
+                  {userApplications.length} submitted
+                </span>
+              )}
+            </div>
+
+            {!currentUser ? (
+              <div style={{ padding: '2rem', textAlign: 'center' }}>
+                <p style={{
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.9rem',
+                  color: 'var(--text-muted)',
+                  marginBottom: '1rem'
+                }}>
+                  Sign in to view your submitted career applications.
+                </p>
+                <a href="#/signin" style={{
+                  display: 'inline-flex',
+                  padding: '0.75rem 1.5rem',
+                  border: '1px solid var(--gold-antique)',
+                  color: 'var(--gold-antique)',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.15em',
+                  textTransform: 'uppercase'
+                }}>
+                  Sign In
+                </a>
+              </div>
+            ) : userApplications.length === 0 ? (
+              <div style={{
+                padding: '2rem',
+                textAlign: 'center',
+                fontFamily: 'var(--font-body)',
+                fontSize: '0.9rem',
+                color: 'var(--text-muted)'
+              }}>
+                No career applications found for your account.
+              </div>
+            ) : (
+              <>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '760px' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: 'var(--canvas-secondary)', borderBottom: '1px solid var(--border-light)' }}>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>ID</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Position</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Experience</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Applied</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleApplications.map((application) => (
+                        <tr key={application.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)' }}>{application.id}</td>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.86rem', color: 'var(--text-dark)', fontWeight: 600 }}>{application.position}</td>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)' }}>{application.experience}</td>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)' }}>{application.date || 'N/A'}</td>
+                          <td style={{ padding: '1rem' }}>
+                            <span style={{
+                              display: 'inline-flex',
+                              padding: '0.25rem 0.6rem',
+                              borderRadius: '999px',
+                              backgroundColor: application.status === 'Rejected' ? 'rgba(219, 68, 85, 0.1)' : 'var(--gold-light)',
+                              color: application.status === 'Rejected' ? '#db4455' : 'var(--gold-antique)',
+                              fontFamily: 'var(--font-body)',
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.08em',
+                              textTransform: 'uppercase'
+                            }}>
+                              {application.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{
+                  padding: '1rem 1.5rem',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
+                  backgroundColor: 'var(--canvas-secondary)'
+                }}>
+                  <span style={{ fontFamily: 'var(--font-body)', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    Showing {(applicationsPage - 1) * APPLICATIONS_PER_PAGE + 1}-{Math.min(applicationsPage * APPLICATIONS_PER_PAGE, userApplications.length)} of {userApplications.length}
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      disabled={applicationsPage === 1}
+                      onClick={() => setApplicationsPage((page) => Math.max(1, page - 1))}
+                      style={{ padding: '0.5rem 0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', backgroundColor: 'var(--canvas-primary)', cursor: applicationsPage === 1 ? 'not-allowed' : 'pointer', opacity: applicationsPage === 1 ? 0.45 : 1 }}
+                    >
+                      Previous
+                    </button>
+                    <span style={{ fontFamily: 'var(--font-body)', fontSize: '0.78rem', minWidth: '4rem', textAlign: 'center' }}>
+                      {applicationsPage} / {applicationsTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={applicationsPage === applicationsTotalPages}
+                      onClick={() => setApplicationsPage((page) => Math.min(applicationsTotalPages, page + 1))}
+                      style={{ padding: '0.5rem 0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', backgroundColor: 'var(--canvas-primary)', cursor: applicationsPage === applicationsTotalPages ? 'not-allowed' : 'pointer', opacity: applicationsPage === applicationsTotalPages ? 0.45 : 1 }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </section>
 

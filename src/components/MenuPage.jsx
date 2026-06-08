@@ -1,7 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Star, ArrowLeft, SlidersHorizontal, X, ChevronDown } from 'lucide-react';
+import { Star, ArrowLeft, SlidersHorizontal, X, ChevronDown, Search } from 'lucide-react';
 import { menuData } from './MenuSection';
+import { getMenuCategories, getMenuItems } from '../lib/api';
+import CustomizeModal from './CustomizeModal';
+import { dinnerSubcategories } from '../lib/menuApi';
 
 const ALL_CATEGORIES = ['Lunch', 'Dinner', 'Vegetarian'];
 
@@ -26,8 +29,114 @@ const CATEGORY_META = {
   'Vegetarian':  { emoji: '🌿', color: '#6B9E3A' }
 };
 
+const resolveCustomerMenuCategory = (categoryName) => {
+  const normalized = String(categoryName || '').trim().toLowerCase();
+  if (normalized === 'lunch') return 'Lunch';
+  if (normalized === 'vegetarian' || normalized === 'plant-based' || normalized === 'plant based') return 'Vegetarian';
+  return 'Dinner';
+};
+
+const resolveDinnerSubcategory = (value) => {
+  const normalized = String(value || '').trim();
+  return dinnerSubcategories.includes(normalized) ? normalized : '';
+};
+
+const getDinnerSubcategory = (item) => {
+  if (item.sub_category) return item.sub_category;
+  if (item.subCategory) return item.subCategory;
+
+  const itemId = String(item.id || '');
+  const itemName = String(item.name || '').toLowerCase();
+  return dinnerSubcategories.find((subcategory) => (
+    (menuData[subcategory] || []).some((menuItem) => (
+      String(menuItem.id || '') === itemId ||
+      String(menuItem.name || '').toLowerCase() === itemName
+    ))
+  )) || '';
+};
+
+const fallbackMenuImage = 'https://images.unsplash.com/photo-1559314809-0d155014e29e?auto=format&fit=crop&q=80&w=600';
+
+const resolveMenuImage = (value) => {
+  if (!value) return fallbackMenuImage;
+  if (/^(https?:|data:|\/)/i.test(value)) return value;
+  return fallbackMenuImage;
+};
+
+const normalizeOptionArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return value
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [namePart, pricePart] = line.split(':');
+          const name = String(namePart || '').trim();
+          const price = Number(String(pricePart || '0').trim());
+          return name ? { name, price: Number.isFinite(price) ? price : 0 } : null;
+        })
+        .filter(Boolean);
+    }
+  }
+  return [];
+};
+
+const groupApiMenuItems = (apiCategories, apiItems) => {
+  const categoryNamesById = new Map(apiCategories.map((category) => [
+    category.id,
+    category.name || category.title || category.slug || 'Menu'
+  ]));
+
+  return apiItems.reduce((grouped, item) => {
+    const rawCategoryName = item.category?.name || item.menu_category?.name || categoryNamesById.get(item.category_id) || categoryNamesById.get(item.menu_category_id);
+    const legacySubcategory = resolveDinnerSubcategory(rawCategoryName);
+    const categoryName = resolveCustomerMenuCategory(rawCategoryName);
+    if (!grouped[categoryName]) grouped[categoryName] = [];
+    grouped[categoryName].push({
+      id: item.id,
+      name: item.name || item.title || 'Menu item',
+      price: Number(item.price || 0),
+      description: item.description || '',
+      rating: Number(item.rating || 4.8),
+      image: resolveMenuImage(item.image || item.image_url),
+      availability: item.is_available ?? item.availability ?? true,
+      addon_options: normalizeOptionArray(item.addon_options),
+      protein_choice: normalizeOptionArray(item.protein_choice),
+      spice_options: normalizeOptionArray(item.spice_options),
+      size_options: normalizeOptionArray(item.size_options),
+      sub_category: item.sub_category || legacySubcategory,
+      suggested_item_ids: normalizeOptionArray(item.suggested_item_ids),
+      suggested_items: normalizeOptionArray(item.suggested_items).map((suggestedItem) => ({
+        id: suggestedItem.id,
+        name: suggestedItem.name || suggestedItem.title || 'Menu item',
+        price: Number(suggestedItem.price || 0),
+        description: suggestedItem.description || '',
+        rating: Number(suggestedItem.rating || 4.8),
+        image: resolveMenuImage(suggestedItem.image || suggestedItem.image_url),
+        availability: suggestedItem.is_available ?? suggestedItem.availability ?? true,
+        addon_options: normalizeOptionArray(suggestedItem.addon_options),
+        protein_choice: normalizeOptionArray(suggestedItem.protein_choice),
+        spice_options: normalizeOptionArray(suggestedItem.spice_options),
+        size_options: normalizeOptionArray(suggestedItem.size_options),
+        sub_category: suggestedItem.sub_category || ''
+      }))
+    });
+    return grouped;
+  }, { Lunch: [], Dinner: [], Vegetarian: [] });
+};
+
 export default function MenuPage({ onOpenReservation, cart = {}, addToCart, removeFromCart }) {
   const [selectedCategory, setSelectedCategory] = useState('Dinner');
+  const [dynamicMenuData, setDynamicMenuData] = useState(menuData);
+  const [dynamicCategories, setDynamicCategories] = useState(ALL_CATEGORIES);
+  const [customizingItem, setCustomizingItem] = useState(null);
+  const [selectedDinnerSubcategory, setSelectedDinnerSubcategory] = useState('All');
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedPriceRange, setSelectedPriceRange] = useState(0);
   const [sortBy, setSortBy]                         = useState('default');
   const [isSortOpen, setIsSortOpen]                 = useState(false);
@@ -42,14 +151,47 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
     visible: { opacity: 1, y: 0, transition: { duration: 0.55, ease: [0.16, 1, 0.3, 1] } }
   };
 
+  useEffect(() => {
+    Promise.all([
+      getMenuCategories().catch(() => []),
+      getMenuItems().catch(() => [])
+    ]).then(([apiCategories, apiItems]) => {
+      if (!apiItems.length) return;
+
+      const grouped = groupApiMenuItems(apiCategories, apiItems);
+      const categories = ALL_CATEGORIES;
+      setDynamicMenuData(grouped);
+      setDynamicCategories(categories);
+      if (!categories.includes(selectedCategory)) {
+        setSelectedCategory(categories[0] || 'Dinner');
+      }
+    }).catch((error) => {
+      console.error('Failed to load backend menu items.', error);
+    });
+  }, []);
+
   // ── Source items from selected category ─────────────────────────────────────
-  const categoryItems = useMemo(() => menuData[selectedCategory] || [], [selectedCategory]);
+  const categoryItems = useMemo(() => dynamicMenuData[selectedCategory] || [], [dynamicMenuData, selectedCategory]);
+
+  const subcategoryFiltered = useMemo(() => {
+    if (selectedCategory !== 'Dinner' || selectedDinnerSubcategory === 'All') return categoryItems;
+    return categoryItems.filter(item => getDinnerSubcategory(item) === selectedDinnerSubcategory);
+  }, [categoryItems, selectedCategory, selectedDinnerSubcategory]);
+
+  const searchFiltered = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return subcategoryFiltered;
+    return subcategoryFiltered.filter((item) => (
+      item.name?.toLowerCase().includes(query) ||
+      item.description?.toLowerCase().includes(query)
+    ));
+  }, [subcategoryFiltered, searchQuery]);
 
   // ── Price filter ─────────────────────────────────────────────────────────────
   const priceFiltered = useMemo(() => {
     const { min, max } = PRICE_RANGES[selectedPriceRange];
-    return categoryItems.filter(item => item.price >= min && item.price < max);
-  }, [categoryItems, selectedPriceRange]);
+    return searchFiltered.filter(item => item.price >= min && item.price < max);
+  }, [searchFiltered, selectedPriceRange]);
 
   // ── Sort ─────────────────────────────────────────────────────────────────────
   const displayedItems = useMemo(() => {
@@ -60,14 +202,45 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
     return copy;
   }, [priceFiltered, sortBy]);
 
-  const hasActiveFilters = selectedPriceRange !== 0 || sortBy !== 'default';
+  const hasActiveFilters = searchQuery.trim() || selectedPriceRange !== 0 || sortBy !== 'default' || (selectedCategory === 'Dinner' && selectedDinnerSubcategory !== 'All');
   const currentSort      = SORT_OPTIONS.find(o => o.value === sortBy);
-  const meta             = CATEGORY_META[selectedCategory];
+  const meta             = CATEGORY_META[selectedCategory] || { emoji: '🍴', color: '#BA9B5F' };
 
   function clearFilters() {
+    setSearchQuery('');
     setSelectedPriceRange(0);
     setSortBy('default');
+    setSelectedDinnerSubcategory('All');
   }
+
+  const handleConfirmCustomization = (customization) => {
+    if (!customizingItem) return;
+
+    const addonsTotal = (customization.addons || []).reduce((sum, addon) => sum + Number(addon.price || 0), 0);
+    const addonNames = (customization.addons || []).map((addon) => addon.name).join(', ');
+    const selectedSize = customization.size?.name || '';
+    const selectedProtein = customization.protein?.name || '';
+    const proteinPrice = customization.protein ? Number(customization.protein.price || 0) : 0;
+    const basePrice = customization.size ? Number(customization.size.price || 0) : Number(customizingItem.price || 0);
+    const customId = [
+      customizingItem.id,
+      selectedSize,
+      selectedProtein,
+      customization.spice,
+      addonNames,
+      customization.requirements
+    ].filter(Boolean).join('|');
+
+    addToCart({
+      ...customizingItem,
+      id: customId,
+      baseId: customizingItem.id,
+      price: Number((basePrice + proteinPrice + addonsTotal).toFixed(2)),
+      name: `${customizingItem.name} (${[selectedSize, selectedProtein, customization.spice].filter(Boolean).join(', ')})`,
+      customization
+    });
+    setCustomizingItem(null);
+  };
 
   return (
     <div style={{ backgroundColor: 'var(--canvas-primary)', paddingTop: '120px' }}>
@@ -132,11 +305,12 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
 
           {/* Category pills inside hero */}
           <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '2.5rem', flexWrap: 'wrap' }}>
-            {ALL_CATEGORIES.map(cat => {
-              const m = CATEGORY_META[cat];
+            {dynamicCategories.map(cat => {
+              const m = CATEGORY_META[cat] || { emoji: '🍴', color: '#BA9B5F' };
               const active = selectedCategory === cat;
+              const href = `#/menu/${cat.toLowerCase()}`;
               return (
-                <button key={cat} onClick={() => setSelectedCategory(cat)} style={{
+                <a key={cat} href={href} style={{
                   display: 'inline-flex', alignItems: 'center', gap: '0.5rem',
                   padding: '0.65rem 1.5rem', borderRadius: '9999px',
                   border: `1.5px solid ${active ? 'var(--gold-antique)' : 'rgba(255,255,255,0.25)'}`,
@@ -146,11 +320,12 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
                   fontFamily: 'var(--font-body)', fontSize: '0.8rem',
                   fontWeight: active ? 700 : 500, letterSpacing: '0.1em',
                   textTransform: 'uppercase', cursor: 'pointer',
+                  textDecoration: 'none',
                   transition: 'all 0.3s ease',
                   boxShadow: active ? '0 4px 20px rgba(186,155,95,0.4)' : 'none'
                 }}>
                   <span>{m.emoji}</span> {cat}
-                </button>
+                </a>
               );
             })}
           </div>
@@ -177,6 +352,44 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
             </div>
             <div style={{ width: '60px', height: '2px', background: `linear-gradient(90deg,${meta.color},transparent)`, marginLeft: '2.4rem' }} />
           </motion.div>
+
+          {selectedCategory === 'Dinner' && (
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '0.6rem',
+              marginBottom: '1.5rem'
+            }}>
+              {['All', ...dinnerSubcategories].map((subcategory) => {
+                const active = selectedDinnerSubcategory === subcategory;
+                return (
+                  <button
+                    key={subcategory}
+                    type="button"
+                    onClick={() => setSelectedDinnerSubcategory(subcategory)}
+                    style={{
+                      padding: '0.55rem 0.95rem',
+                      minHeight: '38px',
+                      borderRadius: '9999px',
+                      border: `1px solid ${active ? 'var(--gold-antique)' : 'var(--border-light)'}`,
+                      backgroundColor: active ? 'var(--gold-antique)' : 'var(--canvas-secondary)',
+                      color: active ? '#fff' : 'var(--text-dark)',
+                      fontFamily: 'var(--font-body)',
+                      fontSize: '0.72rem',
+                      fontWeight: active ? 700 : 500,
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      cursor: 'pointer',
+                      transition: 'all 0.25s',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {subcategory}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* ── Filter Bar ────────────────────────────────────────────────────── */}
           <div style={{
@@ -283,7 +496,7 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
               </div>
             </div>
 
-            {/* Price filter (collapsible) */}
+            {/* Search and price filter (collapsible) */}
             <AnimatePresence>
               {filtersVisible && (
                 <motion.div
@@ -292,6 +505,28 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
                   style={{ overflow: 'hidden' }}
                 >
                   <div style={{ paddingTop: '1.25rem', borderTop: '1px solid var(--border-light)', marginTop: '1.25rem' }}>
+                    <div style={{ position: 'relative', maxWidth: '420px', marginBottom: '1.1rem' }}>
+                      <span style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', display: 'flex' }}>
+                        <Search size={15} />
+                      </span>
+                      <input
+                        type="search"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search dishes..."
+                        style={{
+                          width: '100%',
+                          padding: '0.7rem 0.9rem 0.7rem 2.35rem',
+                          border: '1px solid var(--border-light)',
+                          borderRadius: '6px',
+                          backgroundColor: 'var(--canvas-primary)',
+                          color: 'var(--text-dark)',
+                          fontFamily: 'var(--font-body)',
+                          fontSize: '0.85rem',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
                     <p style={{
                       fontFamily: 'var(--font-body)', fontSize: '0.68rem', fontWeight: 700,
                       letterSpacing: '0.2em', textTransform: 'uppercase',
@@ -334,7 +569,7 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
               </motion.div>
             ) : (
               <motion.div
-                key={`${selectedCategory}-${selectedPriceRange}-${sortBy}`}
+                key={`${selectedCategory}-${selectedDinnerSubcategory}-${searchQuery}-${selectedPriceRange}-${sortBy}`}
                 variants={containerVariants} initial="hidden" animate="visible"
                 style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: '2rem' }}
               >
@@ -379,10 +614,10 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
                             <div className="qty-controls" style={{ border: '1px solid var(--gold-antique)', borderRadius: '9999px', padding: '0.25rem 0.6rem' }}>
                               <button type="button" onClick={e => { e.stopPropagation(); removeFromCart(item.id); }} className="qty-btn" style={{ border: 'none', background: 'none', color: 'var(--text-dark)', cursor: 'pointer', fontWeight: 'bold' }}>-</button>
                               <span className="qty-val" style={{ margin: '0 0.75rem', fontWeight: 700 }}>{qty}</span>
-                              <button type="button" onClick={e => { e.stopPropagation(); addToCart(item); }} className="qty-btn" style={{ border: 'none', background: 'none', color: 'var(--text-dark)', cursor: 'pointer', fontWeight: 'bold' }}>+</button>
+                              <button type="button" onClick={e => { e.stopPropagation(); setCustomizingItem(item); }} className="qty-btn" style={{ border: 'none', background: 'none', color: 'var(--text-dark)', cursor: 'pointer', fontWeight: 'bold' }}>+</button>
                             </div>
                           );
-                          return <button type="button" onClick={e => { e.stopPropagation(); addToCart(item); }} className="card-btn">+ Add to Cart</button>;
+                          return <button type="button" onClick={e => { e.stopPropagation(); setCustomizingItem(item); }} className="card-btn">+ Add to Cart</button>;
                         })()}
                       </div>
                     </div>
@@ -440,6 +675,17 @@ export default function MenuPage({ onOpenReservation, cart = {}, addToCart, remo
           </button>
         </motion.div>
       </section>
+
+      {customizingItem && (
+        <CustomizeModal
+          item={customizingItem}
+          cart={cart}
+          onClose={() => setCustomizingItem(null)}
+          onConfirm={handleConfirmCustomization}
+          onAddSuggestion={addToCart}
+          onRemoveSuggestion={removeFromCart}
+        />
+      )}
     </div>
   );
 }

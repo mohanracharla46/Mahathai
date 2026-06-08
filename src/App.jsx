@@ -17,10 +17,40 @@ import ReservationSection from './components/ReservationSection';
 import Footer from './components/Footer';
 import AuthPage from './components/AuthPage';
 import ProfilePage from './components/ProfilePage';
-import GiftcardPage from './components/GiftcardPage';
+import RewardsPage from './components/RewardsPage';
 import MenuPage from './components/MenuPage';
 import AdminPage from './components/AdminPage';
 import logoImg from './assets/mahathailogo_v2.png';
+import { getOrders, getPromoCodes, getReservations, isAdminUser } from './lib/api';
+import { createOrderWithItemsAndAddons } from './lib/orderService';
+
+const pickupTimeOptions = Array.from({ length: ((21 * 60 + 40) - (11 * 60)) / 10 + 1 }, (_, index) => {
+  const totalMinutes = 11 * 60 + index * 10;
+  const hour24 = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  const value = `${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  const hour12 = hour24 % 12 || 12;
+  const suffix = hour24 >= 12 ? 'PM' : 'AM';
+  return {
+    value,
+    label: `${hour12}:${String(minute).padStart(2, '0')} ${suffix}`
+  };
+});
+
+const formatCartItemDetails = (item) => {
+  const customization = item.customization || item.customizations;
+  if (!customization) return item.name;
+
+  const details = [];
+  if (customization.spice) details.push(`Spice: ${customization.spice}`);
+  if (Array.isArray(customization.addons) && customization.addons.length > 0) {
+    details.push(`Add-ons: ${customization.addons.map((addon) => addon.name).join(', ')}`);
+  }
+  if (customization.size?.name) details.push(`Size: ${customization.size.name}`);
+  if (customization.requirements) details.push(`Notes: ${customization.requirements}`);
+
+  return details.length ? `${item.name} [${details.join('; ')}]` : item.name;
+};
 
 
 export default function App() {
@@ -43,7 +73,7 @@ export default function App() {
     return null;
   });
 
-  const handleLoginSuccess = (profile) => {
+  const handleLoginSuccess = async (profile) => {
     const storageKey = `maha_user_${profile.email}`;
     const savedData = localStorage.getItem(storageKey);
     let loadedUser;
@@ -51,8 +81,11 @@ export default function App() {
       const parsed = JSON.parse(savedData);
       loadedUser = {
         name: profile.name || parsed.name || profile.email.split('@')[0],
+        id: profile.id || parsed.id,
         email: profile.email,
         phone: parsed.phone || profile.phone || '+1 (555) 019-2834',
+        role: profile.role || parsed.role || 'customer',
+        isAdmin: isAdminUser(profile) || parsed.isAdmin || false,
         bookings: parsed.bookings || [
           {
             id: 'mock-b1',
@@ -79,8 +112,11 @@ export default function App() {
     } else {
       loadedUser = {
         name: profile.name || profile.email.split('@')[0],
+        id: profile.id,
         email: profile.email,
         phone: profile.phone || '+1 (555) 019-2834',
+        role: profile.role || 'customer',
+        isAdmin: isAdminUser(profile),
         bookings: [
           {
             id: 'mock-b1',
@@ -105,6 +141,37 @@ export default function App() {
         feedbackReviews: []
       };
     }
+    try {
+      const [apiOrders, apiReservations] = await Promise.all([
+        getOrders({ user_id: loadedUser.id || undefined, email: loadedUser.id ? undefined : loadedUser.email, per_page: 10 }).catch(() => ({ data: [] })),
+        getReservations({ user_id: loadedUser.id || undefined, email: loadedUser.id ? undefined : loadedUser.email, per_page: 10 }).catch(() => ({ data: [] }))
+      ]);
+      const ownOrders = (apiOrders.data || apiOrders)
+        .map((order) => ({
+          id: order.id || `o-${Date.now()}`,
+          date: order.created_at ? new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          items: order.items || order.order_items || 'Online order',
+          total: Number(order.total_amount || order.total || 0),
+          type: order.service_type || order.order_type || 'Delivery',
+          status: order.status || 'Pending'
+        }));
+      const ownBookings = (apiReservations.data || apiReservations)
+        .map((booking) => ({
+          id: booking.id || `b-${Date.now()}`,
+          date: booking.preferred_date || booking.reservation_date || booking.date || '',
+          time: booking.seating_time || booking.reservation_time || booking.time || '',
+          guests: booking.guest_count || booking.guests || booking.party_size || 2,
+          notes: booking.special_notes || booking.notes || '',
+          status: booking.status ? booking.status.charAt(0).toUpperCase() + booking.status.slice(1) : 'Pending'
+        }));
+      loadedUser = {
+        ...loadedUser,
+        orders: ownOrders.length ? ownOrders : loadedUser.orders,
+        bookings: ownBookings.length ? ownBookings : loadedUser.bookings
+      };
+    } catch (error) {
+      console.error('Failed to load customer history from backend.', error);
+    }
     setCurrentUser(loadedUser);
     localStorage.setItem(storageKey, JSON.stringify(loadedUser));
     localStorage.setItem('maha_active_user', loadedUser.email);
@@ -124,7 +191,8 @@ export default function App() {
         bookings: updatedDetails.bookings || currentUser.bookings,
         orders: updatedDetails.orders || currentUser.orders,
         supportTickets: updatedDetails.supportTickets || currentUser.supportTickets,
-        feedbackReviews: updatedDetails.feedbackReviews || currentUser.feedbackReviews
+        feedbackReviews: updatedDetails.feedbackReviews || currentUser.feedbackReviews,
+        redeemedPoints: updatedDetails.redeemedPoints ?? currentUser.redeemedPoints
       };
       setCurrentUser(updated);
       localStorage.setItem(`maha_user_${currentUser.email}`, JSON.stringify(updated));
@@ -176,6 +244,7 @@ export default function App() {
     name: '',
     phone: '',
     address: '',
+    pickupTime: '11:00',
     serviceType: 'delivery'
   });
   const [isCartCheckedOut, setIsCartCheckedOut] = useState(false);
@@ -252,20 +321,48 @@ export default function App() {
     return Math.max(0, subtotal - couponDiscount);
   };
 
-  const handleApplyCoupon = () => {
+  const normalizePromoCode = (promoCode) => ({
+    id: promoCode.id,
+    code: promoCode.code,
+    type: promoCode.discount_type === 'fixed' ? 'flat' : promoCode.discount_type,
+    value: Number(promoCode.discount_value || 0),
+    minOrder: Number(promoCode.minimum_order_amount || 0),
+    expiryDate: promoCode.end_date ? promoCode.end_date.slice(0, 10) : '',
+    status: promoCode.is_active ? 'Active' : 'Inactive'
+  });
+
+  const handleApplyCoupon = async () => {
     setCouponError('');
     setCouponDiscount(0);
     setAppliedCoupon(null);
 
     if (!couponCode) return;
 
-    // Load coupons from localStorage
+    let couponsList = [];
     const savedCoupons = JSON.parse(localStorage.getItem('maha_global_coupons') || '[]');
     const baselineCoupons = [
       { id: 'c-mock1', code: 'WELCOME10', type: 'percentage', value: 10, minOrder: 30, status: 'Active' },
       { id: 'c-mock2', code: 'MAHAFEAST', type: 'flat', value: 15, minOrder: 80, status: 'Active' }
     ];
-    const couponsList = savedCoupons.length > 0 ? savedCoupons : baselineCoupons;
+
+    try {
+      const apiCoupons = (await getPromoCodes()).map(normalizePromoCode);
+      const mergedCoupons = [...apiCoupons];
+
+      savedCoupons.forEach((savedCoupon) => {
+        const exists = mergedCoupons.some((coupon) => (
+          String(coupon.code || '').toUpperCase() === String(savedCoupon.code || '').toUpperCase()
+        ));
+        if (!exists) {
+          mergedCoupons.push(savedCoupon);
+        }
+      });
+
+      couponsList = mergedCoupons.length > 0 ? mergedCoupons : baselineCoupons;
+      localStorage.setItem('maha_global_coupons', JSON.stringify(couponsList));
+    } catch (error) {
+      couponsList = savedCoupons.length > 0 ? savedCoupons : baselineCoupons;
+    }
 
     const match = couponsList.find(c => c.code.toUpperCase() === couponCode.toUpperCase().trim());
 
@@ -319,6 +416,7 @@ export default function App() {
 
   const isAboutPage = currentHash === '#/about' || currentHash === '#about-page';
   const isEventsPage = currentHash === '#/events';
+  const isRewardsPage = currentHash === '#/rewards';
   const isCateringPage = currentHash === '#/catering';
   const isMenuPage = currentHash.startsWith('#/menu') || currentHash === '#menu';
   const isLunchPage = currentHash === '#/menu/lunch';
@@ -328,11 +426,10 @@ export default function App() {
   const isCareersPage = currentHash === '#/careers';
   const isAuthPage = currentHash === '#/login' || currentHash === '#/signin' || currentHash === '#/auth';
   const isProfilePage = currentHash === '#/profile' || currentHash === '#profile-page';
-  const isGiftcardPage = currentHash === '#/giftcards' || currentHash === '#/giftcard';
   const isAdminPage = currentHash === '#/admin';
 
   useEffect(() => {
-    if (isAboutPage || isEventsPage || isCateringPage || isMenuPage || isContactPage || isCareersPage || isAuthPage || isProfilePage || isGiftcardPage || isAdminPage) {
+    if (isAboutPage || isEventsPage || isRewardsPage || isCateringPage || isMenuPage || isContactPage || isCareersPage || isAuthPage || isProfilePage || isAdminPage) {
       window.scrollTo(0, 0);
     } else {
       if (currentHash && currentHash !== '#/') {
@@ -347,7 +444,7 @@ export default function App() {
         }
       }
     }
-  }, [currentHash, isAboutPage, isEventsPage, isCateringPage, isMenuPage, isContactPage, isCareersPage, isAuthPage, isProfilePage, isAdminPage]);
+  }, [currentHash, isAboutPage, isEventsPage, isRewardsPage, isCateringPage, isMenuPage, isContactPage, isCareersPage, isAuthPage, isProfilePage, isAdminPage]);
 
   return (
     <>
@@ -477,21 +574,25 @@ export default function App() {
           {/* Interactive Sections */}
           <main style={{ flexGrow: 1 }}>
             {isAdminPage ? (
-              <AdminPage />
+              <AdminPage currentUser={currentUser} />
             ) : isAboutPage ? (
               <AboutUsPage />
             ) : isAuthPage ? (
               <AuthPage onLoginSuccess={handleLoginSuccess} />
             ) : isProfilePage ? (
-              <ProfilePage 
+            <ProfilePage 
                 currentUser={currentUser} 
                 onSignOut={handleSignOut} 
                 onUpdateProfile={handleUpdateProfile} 
               />
-            ) : isGiftcardPage ? (
-              <GiftcardPage currentUser={currentUser} />
             ) : isEventsPage ? (
               <EventsPage onOpenReservation={openReservation} />
+            ) : isRewardsPage ? (
+              <RewardsPage
+                currentUser={currentUser}
+                onOpenReservation={openReservation}
+                onUpdateProfile={handleUpdateProfile}
+              />
             ) : isCateringPage ? (
               <CateringPage onOpenReservation={openReservation} />
             ) : isLunchPage ? (
@@ -523,9 +624,9 @@ export default function App() {
                 removeFromCart={removeFromCart} 
               />
             ) : isContactPage ? (
-              <ContactPage onOpenReservation={openReservation} />
+              <ContactPage onOpenReservation={openReservation} currentUser={currentUser} />
             ) : isCareersPage ? (
-              <CareersPage onOpenReservation={openReservation} />
+              <CareersPage onOpenReservation={openReservation} currentUser={currentUser} />
             ) : (
               <>
                 <Hero />
@@ -657,20 +758,6 @@ export default function App() {
                           {cartCheckoutData.serviceType === 'delivery' ? ' A thermal insulated delivery courier will be dispatched shortly.' : ' Your curbside pickup is secured.'}
                         </p>
 
-                        <div className="receipt-box">
-                          <div className="receipt-header">Receipt of Aromatic Siam</div>
-                          {Object.values(cart).map(item => (
-                            <div key={item.id} className="receipt-item-row">
-                              <span>{item.quantity}x {item.name}</span>
-                              <span>${item.price * item.quantity}</span>
-                            </div>
-                          ))}
-                          <div className="receipt-total-row">
-                            <span>Total (USD)</span>
-                            <span>${getCartTotal()}.00</span>
-                          </div>
-                        </div>
-
                         <button 
                           onClick={clearCart} 
                           className="btn-filled"
@@ -706,16 +793,22 @@ export default function App() {
                           Checkout Details
                         </h4>
                         <form 
-                          onSubmit={(e) => {
+                          onSubmit={async (e) => {
                             e.preventDefault();
+                            const cartItems = Object.values(cart);
+                            const subtotal = getCartTotal();
+                            const total = getCartFinalTotal();
+                            const orderedItems = cartItems.map(item => `${item.quantity}x ${formatCartItemDetails(item)}`).join(' | ');
+
                             setIsCartCheckedOut(true);
-                            
+                            setIsCartCheckoutFormOpen(false);
+
                             // Add to history if logged in
                             const newOrder = {
                               id: 'o-' + Date.now(),
                               date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                              items: Object.values(cart).map(item => `${item.quantity}x ${item.name}`).join(', '),
-                              total: getCartFinalTotal(),
+                              items: orderedItems,
+                              total,
                               type: cartCheckoutData.serviceType === 'delivery' ? 'Delivery' : 'Pickup',
                               status: 'Preparing',
                               customerName: cartCheckoutData.name,
@@ -736,6 +829,37 @@ export default function App() {
                             const globalOrders = JSON.parse(localStorage.getItem('maha_global_orders') || '[]');
                             globalOrders.unshift(newOrder);
                             localStorage.setItem('maha_global_orders', JSON.stringify(globalOrders));
+                            setCart({});
+                            setCouponCode('');
+                            setCouponDiscount(0);
+                            setAppliedCoupon(null);
+                            setCouponError('');
+
+                            try {
+                              await createOrderWithItemsAndAddons({
+                                user_id: currentUser?.id || null,
+                                full_name: cartCheckoutData.name,
+                                name: cartCheckoutData.name,
+                                email: currentUser ? currentUser.email : 'guest@example.com',
+                                phone_number: cartCheckoutData.phone,
+                                phone: cartCheckoutData.phone,
+                                order_type: cartCheckoutData.serviceType,
+                                service_type: cartCheckoutData.serviceType,
+                                pickup_time: cartCheckoutData.serviceType === 'pickup' ? cartCheckoutData.pickupTime : null,
+                                delivery_address: cartCheckoutData.serviceType === 'delivery' ? cartCheckoutData.address : null,
+                                suite_apt: null,
+                                promo_code_id: appliedCoupon?.id && !String(appliedCoupon.id).startsWith('c-') ? appliedCoupon.id : null,
+                                subtotal,
+                                discount_amount: couponDiscount,
+                                total_amount: total,
+                                total,
+                                items: orderedItems,
+                                order_items: orderedItems,
+                                status: 'pending'
+                              }, cartItems);
+                            } catch (error) {
+                              console.error('Failed to sync order with backend.', error);
+                            }
                           }}
                           style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}
                         >
@@ -803,6 +927,27 @@ export default function App() {
                                 className="w-full px-4 py-2 font-sans text-sm bg-white rounded border focus:outline-none"
                                 style={{ width: '100%', padding: '0.6rem 0.8rem', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', outline: 'none' }}
                               />
+                            </div>
+                          )}
+
+                          {cartCheckoutData.serviceType === 'pickup' && (
+                            <div>
+                              <label className="block font-sans text-[10px] font-bold tracking-widest uppercase text-dark mb-1" style={{ fontSize: '10px' }}>
+                                Pickup Time
+                              </label>
+                              <select
+                                required
+                                value={cartCheckoutData.pickupTime}
+                                onChange={(e) => setCartCheckoutData({ ...cartCheckoutData, pickupTime: e.target.value })}
+                                className="w-full px-4 py-2 font-sans text-sm bg-white rounded border focus:outline-none"
+                                style={{ width: '100%', padding: '0.6rem 0.8rem', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', outline: 'none', backgroundColor: 'white' }}
+                              >
+                                {pickupTimeOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
                             </div>
                           )}
 
@@ -884,6 +1029,16 @@ export default function App() {
                             
                             <div className="order-item-info">
                               <h5 className="order-item-title" style={{ fontSize: '0.95rem' }}>{item.name}</h5>
+                              {item.customization && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', marginTop: '0.25rem', fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                                  {item.customization.spice && <span>Spice: {item.customization.spice}</span>}
+                                  {Array.isArray(item.customization.addons) && item.customization.addons.length > 0 && (
+                                    <span>Add-ons: {item.customization.addons.map((addon) => addon.name).join(', ')}</span>
+                                  )}
+                                  {item.customization.size?.name && <span>Size: {item.customization.size.name}</span>}
+                                  {item.customization.requirements && <span>Notes: {item.customization.requirements}</span>}
+                                </div>
+                              )}
                               <span className="order-item-price" style={{ fontSize: '0.85rem' }}>${item.price}</span>
                             </div>
                             <div className="qty-controls">

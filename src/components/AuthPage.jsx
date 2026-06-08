@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Mail, Lock, User, Phone, ShieldCheck, Eye, EyeOff } from 'lucide-react';
+import { createUser, getUsers, isAdminUser } from '../lib/api';
 
 export default function AuthPage({ onLoginSuccess }) {
   const [activeTab, setActiveTab] = useState('login'); // 'login' or 'register'
@@ -13,21 +14,72 @@ export default function AuthPage({ onLoginSuccess }) {
     agree: false
   });
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [authError, setAuthError] = useState('');
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    setAuthError('');
     setIsSubmitted(true);
-    
-    // Simulate premium delay before success
-    setTimeout(() => {
+
+    try {
+      let userProfile;
+      if (activeTab === 'register') {
+        const createdUser = await createUser({
+          full_name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          password: formData.password,
+          role: 'customer',
+        });
+        userProfile = {
+          id: createdUser.id,
+          name: createdUser.full_name || createdUser.name || formData.name,
+          email: createdUser.email || formData.email,
+          phone: createdUser.phone || formData.phone,
+          role: createdUser.role || 'customer',
+          bookings: [],
+          orders: [],
+          supportTickets: [],
+          feedbackReviews: [],
+        };
+      } else {
+        const users = await getUsers();
+        const matchedUser = users.find((user) => String(user.email).toLowerCase() === formData.email.toLowerCase());
+        if (!matchedUser && formData.email !== 'admin@mahathai.com') {
+          throw new Error('No account was found for this email.');
+        }
+        userProfile = {
+          id: matchedUser?.id,
+          name: matchedUser?.full_name || matchedUser?.name || formData.email.split('@')[0] || 'Guest',
+          email: matchedUser?.email || formData.email,
+          phone: matchedUser?.phone || formData.phone || '+1 (555) 019-2834',
+          role: matchedUser?.role || (formData.email === 'admin@mahathai.com' ? 'admin' : 'customer'),
+          bookings: [],
+          orders: [],
+          supportTickets: [],
+          feedbackReviews: [],
+        };
+      }
+      userProfile.isAdmin = isAdminUser(userProfile);
+      onLoginSuccess(userProfile);
+      window.location.hash = userProfile.isAdmin ? '#/admin' : '#/';
+    } catch (error) {
+      const fallbackAllowed = activeTab === 'login' && formData.email;
       const userProfile = {
         name: activeTab === 'login' ? (formData.email.split('@')[0] || 'Guest') : formData.name,
         email: formData.email,
-        phone: formData.phone || '+1 (555) 019-2834'
+        phone: formData.phone || '+1 (555) 019-2834',
+        role: formData.email === 'admin@mahathai.com' ? 'admin' : 'customer',
       };
-      onLoginSuccess(userProfile);
-      window.location.hash = '#/';
-    }, 1500);
+      if (fallbackAllowed) {
+        userProfile.isAdmin = isAdminUser(userProfile);
+        onLoginSuccess(userProfile);
+        window.location.hash = userProfile.isAdmin ? '#/admin' : '#/';
+      } else {
+        setAuthError(error.message || 'Unable to create account right now.');
+        setIsSubmitted(false);
+      }
+    }
   };
 
   const containerVariants = {
@@ -183,6 +235,11 @@ export default function AuthPage({ onLoginSuccess }) {
                     ? 'Access your private reservations and fine dining coordinates.' 
                     : 'Unlock express checkouts, valet scheduling, and culinary updates.'}
                 </p>
+                {authError && (
+                  <p style={{ marginTop: '1rem', color: '#9F1239', fontFamily: 'var(--font-sans)', fontSize: '0.78rem' }}>
+                    {authError}
+                  </p>
+                )}
               </div>
 
               {/* Form elements */}

@@ -1,6 +1,166 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { User, Mail, Phone, Calendar, ShoppingBag, ShieldCheck, LogOut, ArrowLeft, Award, Clock, MessageSquare, Star } from 'lucide-react';
+import { createConciergeInquiry, createFeedback, getConciergeInquiries, getOrders, getReservations, updateUser } from '../lib/api';
+
+const formatProfileDate = (value) => {
+  if (!value) return 'Date pending';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+};
+
+const formatProfileTime = (value) => {
+  if (!value) return 'Time pending';
+  const [hours, minutes] = String(value).split(':');
+  if (hours === undefined || minutes === undefined) return value;
+  const date = new Date();
+  date.setHours(Number(hours), Number(minutes), 0, 0);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+};
+
+const formatStatus = (value) => {
+  if (!value) return 'Pending';
+  return String(value).charAt(0).toUpperCase() + String(value).slice(1).toLowerCase();
+};
+
+const getOrderItemSize = (item) => {
+  if (item.size?.name) return item.size.name;
+  if (item.size_option?.name) return item.size_option.name;
+  if (item.order_item_size?.name) return item.order_item_size.name;
+  if (item.size_name || item.selected_size) return item.size_name || item.selected_size;
+  const match = String(item.special_notes || '').match(/Size:\s*([^|]+)/i);
+  return match ? match[1].trim() : '';
+};
+
+const formatOrderItemSummary = (item) => {
+  const name = item.menu_item?.name || item.menuItem?.name || item.name || 'Menu item';
+  const size = getOrderItemSize(item);
+  const proteinMatch = String(item.special_notes || '').match(/Protein:\s*([^|]+)/i);
+  const protein = item.protein?.name || item.selected_protein || (proteinMatch ? proteinMatch[1].trim() : '');
+  const spice = item.spice_level ? `Spice: ${item.spice_level}` : '';
+  const addons = Array.isArray(item.addons) && item.addons.length > 0
+    ? `Add-ons: ${item.addons.map((addon) => addon.name).join(', ')}`
+    : '';
+  const details = [spice, protein ? `Protein: ${protein}` : '', addons, size ? `Size: ${size}` : ''].filter(Boolean).join('; ');
+  return `${item.quantity || 1}x ${name}${details ? ` [${details}]` : ''}`;
+};
+
+const normalizeReservation = (booking) => ({
+  id: booking.id,
+  date: formatProfileDate(booking.preferred_date || booking.reservation_date || booking.date),
+  time: formatProfileTime(booking.seating_time || booking.reservation_time || booking.time),
+  guests: booking.guest_count || booking.guests || booking.party_size || 2,
+  notes: booking.special_notes || booking.notes || '',
+  status: formatStatus(booking.status),
+  customerEmail: booking.email || booking.customer_email || booking.user?.email || '',
+});
+
+const formatSupportTimestamp = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+};
+
+const getSupportSortTime = (value) => {
+  if (!value) return Date.now();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? Date.now() : date.getTime();
+};
+
+const sortSupportMessagesByTime = (messages) => [...messages].sort((a, b) => {
+  const timeDiff = (a.sortTime || 0) - (b.sortTime || 0);
+  if (timeDiff !== 0) return timeDiff;
+  return String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric: true });
+});
+
+const normalizeConciergeTicket = (ticket) => {
+  const messageTime = ticket.created_at || ticket.timestamp || ticket.updated_at;
+  const responseTime = ticket.updated_at || ticket.created_at || ticket.timestamp;
+  const timestamp = formatSupportTimestamp(messageTime);
+  const messages = [{
+    id: `${ticket.id}-message`,
+    ticketId: ticket.id,
+    sender: 'user',
+    text: ticket.message || ticket.inquiry || '',
+    status: formatStatus(ticket.status),
+    timestamp,
+    sortTime: getSupportSortTime(messageTime)
+  }];
+
+  if (ticket.response) {
+    messages.push({
+      id: `${ticket.id}-response`,
+      ticketId: ticket.id,
+      sender: 'concierge',
+      text: ticket.response,
+      status: formatStatus(ticket.status),
+      timestamp: formatSupportTimestamp(responseTime),
+      sortTime: getSupportSortTime(responseTime) + 1
+    });
+  }
+
+  return messages;
+};
+
+const PAGE_SIZE = 5;
+
+function PaginationControls({ page, totalPages, totalItems, onPageChange }) {
+  if (totalItems <= PAGE_SIZE) return null;
+
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '1rem',
+      padding: '0.85rem 1rem',
+      border: '1px solid var(--border-light)',
+      borderRadius: '6px',
+      backgroundColor: 'var(--canvas-secondary)'
+    }}>
+      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'var(--font-sans)' }}>
+        Showing {(page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, totalItems)} of {totalItems}
+      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <button
+          type="button"
+          disabled={page === 1}
+          onClick={() => onPageChange(page - 1)}
+          style={{ padding: '0.45rem 0.75rem', border: '1px solid var(--border-light)', borderRadius: '4px', backgroundColor: 'var(--canvas-primary)', cursor: page === 1 ? 'not-allowed' : 'pointer', opacity: page === 1 ? 0.45 : 1 }}
+        >
+          Previous
+        </button>
+        <span style={{ fontSize: '0.78rem', color: 'var(--text-dark)', minWidth: '4rem', textAlign: 'center' }}>
+          {page} / {totalPages}
+        </span>
+        <button
+          type="button"
+          disabled={page === totalPages}
+          onClick={() => onPageChange(page + 1)}
+          style={{ padding: '0.45rem 0.75rem', border: '1px solid var(--border-light)', borderRadius: '4px', backgroundColor: 'var(--canvas-primary)', cursor: page === totalPages ? 'not-allowed' : 'pointer', opacity: page === totalPages ? 0.45 : 1 }}
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile }) {
   const [activeSubTab, setActiveSubTab] = useState('bookings'); // 'bookings', 'orders', 'support', 'feedback'
@@ -9,10 +169,21 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(currentUser ? currentUser.name : '');
   const [editPhone, setEditPhone] = useState(currentUser ? currentUser.phone : '');
+  const [profileNotice, setProfileNotice] = useState(null);
+  const [freshBookings, setFreshBookings] = useState([]);
+  const [freshOrders, setFreshOrders] = useState([]);
+  const [bookingsTotalItems, setBookingsTotalItems] = useState(0);
+  const [ordersTotalItems, setOrdersTotalItems] = useState(0);
+  const [bookingsPage, setBookingsPage] = useState(1);
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [feedbackPage, setFeedbackPage] = useState(1);
 
   // Support Concierge states
   const [supportMsg, setSupportMsg] = useState('');
   const [isSendingSupport, setIsSendingSupport] = useState(false);
+  const [supportTickets, setSupportTickets] = useState(currentUser?.supportTickets || []);
+  const [isLoadingSupportTickets, setIsLoadingSupportTickets] = useState(false);
+  const supportChatRef = useRef(null);
 
   // Culinary Feedback states
   const [feedbackExp, setFeedbackExp] = useState('General Dining Salon');
@@ -29,6 +200,127 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
     }
   }, [currentUser]);
 
+  useEffect(() => {
+    setBookingsPage(1);
+    setOrdersPage(1);
+    setFeedbackPage(1);
+  }, [activeSubTab]);
+
+  useEffect(() => {
+    if (!currentUser?.id && !currentUser?.email) return;
+
+    let ignore = false;
+    const loadReservations = () => {
+      getReservations({
+        page: bookingsPage,
+        per_page: PAGE_SIZE,
+        user_id: currentUser.id || undefined,
+        email: currentUser.id ? undefined : currentUser.email
+      })
+        .then((reservations) => {
+          if (ignore) return;
+          const rows = reservations.data || reservations;
+          const normalized = rows.map(normalizeReservation).slice(0, PAGE_SIZE);
+          setFreshBookings(normalized);
+          setBookingsTotalItems(reservations.total ?? normalized.length);
+          if (normalized.length > 0) {
+            onUpdateProfile({ bookings: normalized });
+          }
+        })
+        .catch((error) => {
+          console.error('Failed to load profile reservations.', error);
+        });
+    };
+
+    loadReservations();
+    const refreshTimer = window.setInterval(loadReservations, 10000);
+
+    return () => {
+      ignore = true;
+      window.clearInterval(refreshTimer);
+    };
+  }, [currentUser?.id, currentUser?.email, bookingsPage]);
+
+  useEffect(() => {
+    if (!currentUser?.id && !currentUser?.email) return;
+
+    let ignore = false;
+    getOrders({
+      page: ordersPage,
+      per_page: PAGE_SIZE,
+      user_id: currentUser.id || undefined,
+      email: currentUser.id ? undefined : currentUser.email
+    })
+      .then((orders) => {
+        if (ignore) return;
+        const rows = orders.data || orders;
+        const normalized = rows
+          .map((order) => ({
+            id: order.id,
+            date: formatProfileDate(order.created_at || order.date),
+            items: order.order_items || (
+              order.items?.length
+              ? order.items.map(formatOrderItemSummary).join(', ')
+              : order.items || 'Order items pending'
+            ),
+            total: Number(order.total_amount || order.total || 0),
+            type: order.service_type === 'pickup' || order.order_type === 'pickup' ? 'Pickup' : 'Delivery',
+            status: formatStatus(order.status)
+          }))
+          .slice(0, PAGE_SIZE);
+        setFreshOrders(normalized);
+        setOrdersTotalItems(orders.total ?? normalized.length);
+      })
+      .catch((error) => {
+        console.error('Failed to load profile orders.', error);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [currentUser?.id, currentUser?.email, ordersPage]);
+
+  const loadSupportTickets = async () => {
+    if (!currentUser?.id) return;
+
+    setIsLoadingSupportTickets(true);
+    try {
+      const inquiries = await getConciergeInquiries({ user_id: currentUser.id });
+      const rows = Array.isArray(inquiries?.data) ? inquiries.data : inquiries;
+      const normalizedTickets = (Array.isArray(rows) ? rows : [])
+        .flatMap(normalizeConciergeTicket);
+      const sortedTickets = sortSupportMessagesByTime(normalizedTickets);
+
+      setSupportTickets(sortedTickets);
+      onUpdateProfile({
+        ...currentUser,
+        supportTickets: sortedTickets
+      });
+    } catch (error) {
+      console.error('Failed to load concierge support records.', error);
+      setSupportTickets(currentUser.supportTickets || []);
+    } finally {
+      setIsLoadingSupportTickets(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    loadSupportTickets();
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (activeSubTab !== 'support' || !supportChatRef.current) return;
+
+    supportChatRef.current.scrollTop = supportChatRef.current.scrollHeight;
+  }, [activeSubTab, supportTickets.length, isSendingSupport]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((currentUser?.feedbackReviews?.length || 0) / PAGE_SIZE));
+    setFeedbackPage((page) => Math.min(page, totalPages));
+  }, [currentUser?.feedbackReviews?.length]);
+
   if (!currentUser) {
     return (
       <div style={{ backgroundColor: 'var(--canvas-primary)', minHeight: '100vh', paddingTop: '120px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
@@ -41,21 +333,57 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
     );
   }
 
-  const bookingsList = currentUser.bookings || [];
-  const ordersList = currentUser.orders || [];
+  const bookingsList = freshBookings.length > 0
+    ? freshBookings
+    : (currentUser.bookings || []).map((booking) => ({
+        ...booking,
+        date: formatProfileDate(booking.preferred_date || booking.date),
+        time: formatProfileTime(booking.seating_time || booking.time),
+        status: formatStatus(booking.status)
+      }));
+  const ordersList = freshOrders.length > 0 ? freshOrders : (currentUser.orders || []);
+  const bookingsTotalCount = bookingsTotalItems || bookingsList.length;
+  const ordersTotalCount = ordersTotalItems || ordersList.length;
+  const bookingsTotalPages = Math.max(1, Math.ceil(bookingsTotalCount / PAGE_SIZE));
+  const ordersTotalPages = Math.max(1, Math.ceil(ordersTotalCount / PAGE_SIZE));
+  const visibleBookings = freshBookings.length > 0 ? bookingsList : bookingsList.slice((bookingsPage - 1) * PAGE_SIZE, bookingsPage * PAGE_SIZE);
+  const visibleOrders = freshOrders.length > 0 ? ordersList : ordersList.slice((ordersPage - 1) * PAGE_SIZE, ordersPage * PAGE_SIZE);
+  const feedbackReviewsList = currentUser.feedbackReviews || [];
+  const feedbackTotalCount = feedbackReviewsList.length;
+  const feedbackTotalPages = Math.max(1, Math.ceil(feedbackTotalCount / PAGE_SIZE));
+  const visibleFeedbackReviews = feedbackReviewsList.slice((feedbackPage - 1) * PAGE_SIZE, feedbackPage * PAGE_SIZE);
 
-  const handleSaveProfile = (e) => {
+  const showProfileNotice = (type, message) => {
+    setProfileNotice({ type, message });
+    setTimeout(() => setProfileNotice(null), 4000);
+  };
+
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
     if (editName && editPhone) {
-      onUpdateProfile({
-        name: editName,
-        phone: editPhone
-      });
-      setIsEditing(false);
+      if (!currentUser.id) {
+        showProfileNotice('error', 'This profile is not linked to a backend user. Please login with a registered account.');
+        return;
+      }
+
+      try {
+        const updatedUser = await updateUser(currentUser.id, {
+          full_name: editName,
+          phone: editPhone
+        });
+        onUpdateProfile({
+          name: updatedUser.full_name || editName,
+          phone: updatedUser.phone || editPhone
+        });
+        setIsEditing(false);
+        showProfileNotice('success', 'Profile updated successfully.');
+      } catch (error) {
+        showProfileNotice('error', error.message || 'Profile update failed.');
+      }
     }
   };
 
-  const handleSendSupport = (e) => {
+  const handleSendSupport = async (e) => {
     e.preventDefault();
     if (!supportMsg.trim()) return;
 
@@ -63,16 +391,44 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
       id: 'msg-' + Date.now(),
       sender: 'user',
       text: supportMsg,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      sortTime: Date.now()
     };
 
-    const updatedTickets = [...(currentUser.supportTickets || []), userMsg];
+    const updatedTickets = sortSupportMessagesByTime([...supportTickets, userMsg]);
+    setSupportTickets(updatedTickets);
     
     // Update profile with user message
     onUpdateProfile({
       ...currentUser,
       supportTickets: updatedTickets
     });
+    try {
+      const savedInquiry = await createConciergeInquiry({
+        user_id: currentUser.id || null,
+        name: currentUser.name,
+        email: currentUser.email,
+        phone: currentUser.phone,
+        phone_number: currentUser.phone,
+        message: supportMsg,
+        inquiry: supportMsg,
+        status: 'open'
+      });
+      const savedTickets = normalizeConciergeTicket(savedInquiry);
+      const syncedTickets = sortSupportMessagesByTime([
+        ...supportTickets.filter((ticket) => ticket.id !== userMsg.id),
+        ...savedTickets
+      ]);
+      setSupportTickets(syncedTickets);
+      onUpdateProfile({
+        ...currentUser,
+        supportTickets: syncedTickets
+      });
+      showProfileNotice('success', 'Concierge inquiry sent successfully.');
+    } catch (error) {
+      console.error('Failed to sync concierge inquiry with backend.', error);
+      showProfileNotice('error', error.message || 'Concierge inquiry could not be saved.');
+    }
     setSupportMsg('');
     setIsSendingSupport(true);
 
@@ -82,18 +438,21 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
         id: 'msg-host-' + Date.now(),
         sender: 'concierge',
         text: `Orchestrating coordinates for your inquiry. A senior court director will reach out to you shortly at ${currentUser.phone} or ${currentUser.email} to finalize your arrangements. Inquiry Code: MAHA-CON-${Math.floor(1000 + Math.random() * 9000)}.`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sortTime: Date.now()
       };
       
+      const hostTickets = sortSupportMessagesByTime([...updatedTickets, hostMsg]);
       onUpdateProfile({
         ...currentUser,
-        supportTickets: [...updatedTickets, hostMsg]
+        supportTickets: hostTickets
       });
+      setSupportTickets((tickets) => sortSupportMessagesByTime([...tickets, hostMsg]));
       setIsSendingSupport(false);
     }, 1200);
   };
 
-  const handleFeedbackSubmit = (e) => {
+  const handleFeedbackSubmit = async (e) => {
     e.preventDefault();
     if (!feedbackComment.trim()) return;
 
@@ -108,11 +467,31 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
     };
 
     const updatedReviews = [newReview, ...(currentUser.feedbackReviews || [])];
+    setFeedbackPage(1);
     
     onUpdateProfile({
       ...currentUser,
       feedbackReviews: updatedReviews
     });
+    try {
+      await createFeedback({
+        user_id: currentUser.id || null,
+        dining_experience: feedbackExp,
+        review_notes: feedbackComment,
+        name: currentUser.name,
+        customer_name: currentUser.name || currentUser.email.split('@')[0],
+        email: currentUser.email,
+        customer_email: currentUser.email,
+        experience: feedbackExp,
+        rating: feedbackRating,
+        comment: feedbackComment,
+        message: feedbackComment
+      });
+      showProfileNotice('success', 'Feedback submitted successfully.');
+    } catch (error) {
+      console.error('Failed to sync feedback with backend.', error);
+      showProfileNotice('error', error.message || 'Feedback could not be saved.');
+    }
 
     // Save to global feedback registry for the Admin Panel
     const globalFeedback = JSON.parse(localStorage.getItem('maha_global_feedback') || '[]');
@@ -245,6 +624,22 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                 {currentUser.name ? currentUser.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'U'}
               </div>
             </div>
+
+            {profileNotice && (
+              <div style={{
+                padding: '0.75rem 1rem',
+                marginBottom: '1.25rem',
+                borderRadius: '6px',
+                border: profileNotice.type === 'success' ? '1px solid rgba(14,110,86,0.24)' : '1px solid rgba(159,18,57,0.24)',
+                backgroundColor: profileNotice.type === 'success' ? 'rgba(14,110,86,0.08)' : 'rgba(159,18,57,0.06)',
+                color: profileNotice.type === 'success' ? 'var(--accent-jade)' : '#9F1239',
+                fontFamily: 'var(--font-sans)',
+                fontSize: '0.78rem',
+                lineHeight: 1.5
+              }}>
+                {profileNotice.message}
+              </div>
+            )}
 
             {!isEditing ? (
               <>
@@ -493,57 +888,69 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                     No reservation history coordinates recorded. Request a salon booking to begin your culinary journey.
                   </p>
                 ) : (
-                  bookingsList.map((booking) => (
-                    <div 
-                      key={booking.id}
-                      style={{
-                        backgroundColor: 'var(--canvas-secondary)',
-                        border: '1px solid var(--border-light)',
-                        borderRadius: '8px',
-                        padding: '1.5rem',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '1rem',
-                        textAlign: 'left'
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <Calendar size={18} style={{ color: 'var(--accent-jade)' }} />
-                          <span style={{ fontFamily: 'var(--font-serif)', fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-dark)' }}>
-                            Table Booking
+                  <>
+                    {visibleBookings.map((booking) => (
+                      <div 
+                        key={booking.id}
+                        style={{
+                          backgroundColor: 'var(--canvas-secondary)',
+                          border: '1px solid var(--border-light)',
+                          borderRadius: '8px',
+                          padding: '1.5rem',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '1rem',
+                          textAlign: 'left'
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <Calendar size={18} style={{ color: 'var(--accent-jade)' }} />
+                            <span style={{ fontFamily: 'var(--font-serif)', fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-dark)' }}>
+                              Table Booking
+                            </span>
+                          </div>
+                          <span 
+                            style={{ 
+                              fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                              backgroundColor: booking.status === 'Confirmed'
+                                ? 'rgba(14, 110, 86, 0.08)'
+                                : booking.status === 'Cancelled'
+                                  ? 'rgba(159, 18, 57, 0.08)'
+                                  : 'var(--gold-light)',
+                              color: booking.status === 'Confirmed'
+                                ? 'var(--accent-jade)'
+                                : booking.status === 'Cancelled'
+                                  ? '#9F1239'
+                                  : 'var(--gold-antique)',
+                              padding: '0.25rem 0.6rem', borderRadius: '4px'
+                            }}
+                          >
+                            {booking.status}
                           </span>
                         </div>
-                        <span 
-                          style={{ 
-                            fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                            backgroundColor: 'rgba(14, 110, 86, 0.08)', color: 'var(--accent-jade)',
-                            padding: '0.25rem 0.6rem', borderRadius: '4px'
-                          }}
-                        >
-                          {booking.status}
-                        </span>
-                      </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', borderTop: '1px solid rgba(11, 54, 61, 0.06)', paddingTop: '1rem' }}>
-                        <div>
-                          <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Date & Seating</span>
-                          <span style={{ fontSize: '0.85rem', color: 'var(--text-dark)', fontWeight: 500 }}>{booking.date} at {booking.time}</span>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', borderTop: '1px solid rgba(11, 54, 61, 0.06)', paddingTop: '1rem' }}>
+                          <div>
+                            <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Date & Seating</span>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-dark)', fontWeight: 500 }}>{booking.date} at {booking.time}</span>
+                          </div>
+                          <div>
+                            <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Patron Headcount</span>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-dark)', fontWeight: 500 }}>{booking.guests} Guests</span>
+                          </div>
                         </div>
-                        <div>
-                          <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Patron Headcount</span>
-                          <span style={{ fontSize: '0.85rem', color: 'var(--text-dark)', fontWeight: 500 }}>{booking.guests} Guests</span>
-                        </div>
-                      </div>
 
-                      {booking.notes && (
-                        <div style={{ borderTop: '1px solid rgba(11, 54, 61, 0.04)', paddingTop: '0.75rem' }}>
-                          <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Dietary & Seating Requests</span>
-                          <p style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>"{booking.notes}"</p>
-                        </div>
-                      )}
-                    </div>
-                  ))
+                        {booking.notes && (
+                          <div style={{ borderTop: '1px solid rgba(11, 54, 61, 0.04)', paddingTop: '0.75rem' }}>
+                            <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Dietary & Seating Requests</span>
+                            <p style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>"{booking.notes}"</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    <PaginationControls page={bookingsPage} totalPages={bookingsTotalPages} totalItems={bookingsTotalCount} onPageChange={setBookingsPage} />
+                  </>
                 )
               )}
 
@@ -554,7 +961,8 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                     No delivery or pickup history recorded. Explore our menu to place your selection.
                   </p>
                 ) : (
-                  ordersList.map((order) => (
+                  <>
+                  {visibleOrders.map((order) => (
                     <div 
                       key={order.id}
                       style={{
@@ -608,7 +1016,9 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                         </div>
                       </div>
                     </div>
-                  ))
+                  ))}
+                  <PaginationControls page={ordersPage} totalPages={ordersTotalPages} totalItems={ordersTotalCount} onPageChange={setOrdersPage} />
+                  </>
                 )
               )}
 
@@ -636,6 +1046,7 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
 
                     {/* Chat log */}
                     <div 
+                      ref={supportChatRef}
                       style={{
                         minHeight: '260px',
                         maxHeight: '340px',
@@ -659,7 +1070,13 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                       </div>
 
                       {/* Dynamic messages */}
-                      {(currentUser.supportTickets || []).map((msg) => (
+                      {isLoadingSupportTickets && (
+                        <div style={{ alignSelf: 'center', color: 'var(--text-muted)', fontSize: '0.75rem', fontStyle: 'italic' }}>
+                          Loading concierge records...
+                        </div>
+                      )}
+
+                      {supportTickets.map((msg) => (
                         <div 
                           key={msg.id}
                           style={{
@@ -880,13 +1297,13 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                       Your Refined Notes
                     </h4>
                     
-                    {(!currentUser.feedbackReviews || currentUser.feedbackReviews.length === 0) ? (
+                    {feedbackReviewsList.length === 0 ? (
                       <p style={{ fontFamily: 'var(--font-sans)', fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
                         No feedback coordinates recorded yet.
                       </p>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        {currentUser.feedbackReviews.map((rev) => (
+                        {visibleFeedbackReviews.map((rev) => (
                           <div 
                             key={rev.id}
                             style={{
@@ -924,6 +1341,7 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                             </p>
                           </div>
                         ))}
+                        <PaginationControls page={feedbackPage} totalPages={feedbackTotalPages} totalItems={feedbackTotalCount} onPageChange={setFeedbackPage} />
                       </div>
                     )}
                   </div>

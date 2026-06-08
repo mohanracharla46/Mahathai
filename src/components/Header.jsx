@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Menu, X, ChevronDown, ShoppingBag, User, LogOut, ShieldAlert } from 'lucide-react';
 import logoImg from '../assets/mahathailogo_v2.png';
+import { isAdminUser } from '../lib/api';
 
 const navLinks = [
   { name: 'Home', href: '#home' },
@@ -16,16 +17,10 @@ const navLinks = [
     ]
   },
   { name: 'Private Events', href: '#/events' },
+  { name: 'Rewards', href: '#/rewards' },
   { name: 'Catering', href: '#/catering' },
   { name: 'Careers', href: '#/careers' },
-  {
-    name: 'Contact',
-    href: '#/contact',
-    dropdown: [
-      { name: 'Contact Us', href: '#/contact' },
-      { name: 'Gift Cards', href: '#/giftcards' }
-    ]
-  }
+  { name: 'Contact', href: '#/contact' }
 ];
 
 export default function Header({ onOpenReservation, cartCount = 0, onOpenCart, currentUser = null, onSignOut }) {
@@ -180,7 +175,9 @@ export default function Header({ onOpenReservation, cartCount = 0, onOpenCart, c
           {/* Desktop Reservation CTA & Shopping Cart & User Profile */}
           <div className="nav-desktop-cta">
             <button
-              onClick={() => onOpenReservation('order')}
+              onClick={() => {
+                window.location.hash = '#/menu';
+              }}
               className="btn-filled"
               style={{
                 textDecoration: 'none',
@@ -321,7 +318,7 @@ export default function Header({ onOpenReservation, cartCount = 0, onOpenCart, c
                         <User size={12} style={{ color: 'var(--gold-antique)' }} />
                         View Profile
                       </a>
-                      {currentUser && currentUser.email === 'admin@mahathai.com' && (
+                      {isAdminUser(currentUser) && (
                         <a
                           href="#/admin"
                           onClick={() => setActiveDropdown(null)}
@@ -739,7 +736,7 @@ export default function Header({ onOpenReservation, cartCount = 0, onOpenCart, c
                 <button
                   onClick={() => {
                     setIsOpen(false);
-                    onOpenReservation('order');
+                    window.location.hash = '#/menu';
                   }}
                   className="btn-filled"
                   style={{

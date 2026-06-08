@@ -2,7 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { useWebsiteContent } from '../utils/cms';
 import chefStoryImg from '../assets/Maha Hot Pot (Seasonal).png';
-import menuCurryImg from '../assets/Coconut Shell Seafood.png';
+import menuCurryImg from '../assets/Coconut Shell.png';
 
 export default function PhilosophySection() {
   const content = useWebsiteContent();

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Calendar, Clock, Users, ShieldCheck, HelpCircle, MapPin, ShoppingBag, Truck } from 'lucide-react';
+import { createOrder, createReservation } from '../lib/api';
 
 const orderableDishes = [
   {
@@ -23,6 +24,19 @@ const orderableDishes = [
   }
 ];
 
+const pickupTimeOptions = Array.from({ length: ((21 * 60 + 40) - (11 * 60)) / 10 + 1 }, (_, index) => {
+  const totalMinutes = 11 * 60 + index * 10;
+  const hour24 = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  const value = `${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  const hour12 = hour24 % 12 || 12;
+  const suffix = hour24 >= 12 ? 'PM' : 'AM';
+  return {
+    value,
+    label: `${hour12}:${String(minute).padStart(2, '0')} ${suffix}`
+  };
+});
+
 export default function ReservationSection({ initialTab = 'reservation', currentUser = null }) {
   const [activeTab, setActiveTab] = useState(initialTab);
 
@@ -42,25 +56,48 @@ export default function ReservationSection({ initialTab = 'reservation', current
     notes: ''
   });
   const [isReserveSubmitted, setIsReserveSubmitted] = useState(false);
+  const [reserveError, setReserveError] = useState('');
 
-  const handleReserveSubmit = (e) => {
+  const handleReserveSubmit = async (e) => {
     e.preventDefault();
+    setReserveError('');
     if (reserveData.name && reserveData.email && reserveData.phone && reserveData.date) {
+      if (!currentUser?.id) {
+        setReserveError('Please register or sign in with a backend customer account before booking.');
+        return;
+      }
+
+      const booking = {
+        id: 'b-' + Date.now(),
+        date: new Date(reserveData.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        time: reserveData.time + ' Seating',
+        guests: parseInt(reserveData.guests) || 2,
+        notes: reserveData.notes || '',
+        status: 'Pending',
+        customerName: reserveData.name,
+        customerEmail: reserveData.email,
+        customerPhone: reserveData.phone
+      };
+
+      try {
+        await createReservation({
+          user_id: currentUser.id,
+          guest_count: parseInt(reserveData.guests) || 2,
+          preferred_date: reserveData.date,
+          seating_time: reserveData.time,
+          special_notes: reserveData.notes,
+          status: 'pending'
+        });
+      } catch (error) {
+        console.error('Failed to sync reservation with backend.', error);
+        setReserveError(error.message || 'Reservation could not be saved. Please check Laravel validation.');
+        return;
+      }
+
       setIsReserveSubmitted(true);
-      
       // Dispatch custom event to add reservation booking to history
       window.dispatchEvent(new CustomEvent('maha_add_booking', {
-        detail: {
-          id: 'b-' + Date.now(),
-          date: new Date(reserveData.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-          time: reserveData.time + ' Seating',
-          guests: parseInt(reserveData.guests) || 2,
-          notes: reserveData.notes || '',
-          status: 'Confirmed',
-          customerName: reserveData.name,
-          customerEmail: reserveData.email,
-          customerPhone: reserveData.phone
-        }
+        detail: booking
       }));
     }
   };
@@ -82,7 +119,7 @@ export default function ReservationSection({ initialTab = 'reservation', current
   const [orderServiceType, setOrderServiceType] = useState('delivery'); // 'delivery' or 'pickup'
   const [orderAddress, setOrderAddress] = useState('');
   const [orderSuite, setOrderSuite] = useState('');
-  const [orderPickupTime, setOrderPickupTime] = useState('ASAP');
+  const [orderPickupTime, setOrderPickupTime] = useState('11:00');
   const [orderName, setOrderName] = useState('');
   const [orderEmail, setOrderEmail] = useState('');
   const [orderPhone, setOrderPhone] = useState('');
@@ -129,29 +166,55 @@ export default function ReservationSection({ initialTab = 'reservation', current
     });
   };
 
-  const handleOrderSubmit = (e) => {
+  const handleOrderSubmit = async (e) => {
     e.preventDefault();
     if (subtotal === 0) return; // Prevent empty orders
     if (orderName && orderEmail && orderPhone && (orderServiceType === 'pickup' || orderAddress)) {
+      const orderItems = orderableDishes
+        .filter(d => orderQuantities[d.id] > 0)
+        .map(d => `${orderQuantities[d.id]}x ${d.name}`)
+        .join(', ');
+      const order = {
+        id: 'o-' + Date.now(),
+        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        items: orderItems,
+        total: subtotal,
+        type: orderServiceType === 'delivery' ? 'Delivery' : 'Pickup',
+        status: 'Preparing',
+        customerName: orderName,
+        customerEmail: orderEmail,
+        customerPhone: orderPhone,
+        address: orderServiceType === 'delivery' ? orderAddress : 'Pickup'
+      };
+
+      try {
+        await createOrder({
+          user_id: currentUser?.id || null,
+          full_name: orderName,
+          name: orderName,
+          email: orderEmail,
+          phone_number: orderPhone,
+          phone: orderPhone,
+          order_type: orderServiceType,
+          service_type: orderServiceType,
+          pickup_time: orderServiceType === 'pickup' ? orderPickupTime : null,
+          delivery_address: orderServiceType === 'delivery' ? orderAddress : null,
+          suite_apt: orderSuite,
+          subtotal,
+          discount_amount: 0,
+          total_amount: subtotal,
+          total: subtotal,
+          items: orderItems,
+          status: 'pending'
+        });
+      } catch (error) {
+        console.error('Failed to sync order with backend.', error);
+      }
+
       setIsOrderSubmitted(true);
-      
       // Dispatch custom event to add online order to history
       window.dispatchEvent(new CustomEvent('maha_add_order', {
-        detail: {
-          id: 'o-' + Date.now(),
-          date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-          items: orderableDishes
-            .filter(d => orderQuantities[d.id] > 0)
-            .map(d => `${orderQuantities[d.id]}x ${d.name}`)
-            .join(', '),
-          total: subtotal,
-          type: orderServiceType === 'delivery' ? 'Delivery' : 'Pickup',
-          status: 'Preparing',
-          customerName: orderName,
-          customerEmail: orderEmail,
-          customerPhone: orderPhone,
-          address: orderServiceType === 'delivery' ? orderAddress : 'Pickup'
-        }
+        detail: order
       }));
     }
   };
@@ -159,7 +222,7 @@ export default function ReservationSection({ initialTab = 'reservation', current
   const handleOrderReset = () => {
     setOrderAddress('');
     setOrderSuite('');
-    setOrderPickupTime('ASAP');
+    setOrderPickupTime('11:00');
     setOrderName('');
     setOrderEmail('');
     setOrderPhone('');
@@ -380,6 +443,20 @@ export default function ReservationSection({ initialTab = 'reservation', current
                       }}
                     >
                       <form onSubmit={handleReserveSubmit} className="space-y-6" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                        {reserveError && (
+                          <div style={{
+                            padding: '0.85rem 1rem',
+                            border: '1px solid rgba(159, 18, 57, 0.28)',
+                            borderRadius: '6px',
+                            backgroundColor: 'rgba(159, 18, 57, 0.06)',
+                            color: '#9F1239',
+                            fontFamily: 'var(--font-sans)',
+                            fontSize: '0.78rem',
+                            lineHeight: 1.6
+                          }}>
+                            {reserveError}
+                          </div>
+                        )}
                         {/* Guest Count Slider/Selector */}
                         <div>
                           <label 
@@ -792,13 +869,12 @@ export default function ReservationSection({ initialTab = 'reservation', current
                                     outline: 'none'
                                   }}
                                 >
-                                  <option value="ASAP">As soon as possible (20 mins)</option>
-                                  <option value="12:00">12:00 PM</option>
-                                  <option value="13:00">01:00 PM</option>
-                                  <option value="18:00">06:00 PM</option>
-                                  <option value="19:00">07:00 PM</option>
-                                  <option value="20:00">08:00 PM</option>
-                                  <option value="21:00">09:00 PM</option>
+                                
+                                  {pickupTimeOptions.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
                                 </select>
                               </div>
                             </motion.div>

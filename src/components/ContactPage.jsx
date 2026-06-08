@@ -1,9 +1,30 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { MapPin, Phone, Mail, Clock, Send, ArrowLeft, MessageSquare, Globe, ChevronRight } from 'lucide-react';
 import { useWebsiteContent } from '../utils/cms';
+import { createContactMessage, getContactMessages } from '../lib/api';
 
-export default function ContactPage({ onOpenReservation }) {
+const MESSAGES_PER_PAGE = 5;
+
+const normalizeMatchValue = (value) => String(value || '').trim().toLowerCase();
+
+const normalizeContactMessage = (message) => ({
+  id: message.id || `contact-${Date.now()}`,
+  name: message.name || message.full_name || message.user?.name || 'Guest',
+  email: message.email || message.user?.email || '',
+  phone: message.phone || message.phone_number || '',
+  subject: message.subject || message.inquiry_type || 'Contact Message',
+  message: message.message || message.notes || message.body || '',
+  status: message.status
+    ? String(message.status).charAt(0).toUpperCase() + String(message.status).slice(1).toLowerCase()
+    : 'Pending',
+  created_at: message.created_at || message.date || new Date().toISOString(),
+  date: message.created_at
+    ? new Date(message.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : message.date || ''
+});
+
+export default function ContactPage({ onOpenReservation, currentUser = null }) {
   const content = useWebsiteContent();
   const {
     heroSubtitle,
@@ -29,16 +50,123 @@ export default function ContactPage({ onOpenReservation }) {
     name: '', email: '', phone: '', subject: '', message: ''
   });
   const [submitted, setSubmitted] = useState(false);
+  const [userMessages, setUserMessages] = useState([]);
+  const [messagesPage, setMessagesPage] = useState(1);
+
+  const userEmail = normalizeMatchValue(currentUser?.email);
+  const userPhone = normalizeMatchValue(currentUser?.phone);
+
+  const loadUserMessages = async () => {
+    const savedMessages = JSON.parse(localStorage.getItem('maha_contact_messages') || '[]')
+      .map(normalizeContactMessage);
+
+    const matchesUser = (message) => (
+      (userEmail && normalizeMatchValue(message.email) === userEmail) ||
+      (userPhone && normalizeMatchValue(message.phone) === userPhone)
+    );
+
+    setUserMessages(savedMessages.filter(matchesUser));
+
+    try {
+      const apiMessages = await getContactMessages();
+      const rows = apiMessages?.data || apiMessages;
+      const normalizedMessages = Array.isArray(rows)
+        ? rows.map(normalizeContactMessage)
+        : [];
+      setUserMessages(normalizedMessages.filter(matchesUser));
+    } catch (error) {
+      console.error('Failed to load user contact messages.', error);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      name: currentUser.name || '',
+      email: currentUser.email || '',
+      phone: currentUser.phone || ''
+    }));
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setUserMessages([]);
+      return;
+    }
+
+    loadUserMessages();
+
+    const handleStorageUpdate = (event) => {
+      if (event.key === 'maha_contact_messages') {
+        loadUserMessages();
+      }
+    };
+
+    window.addEventListener('storage', handleStorageUpdate);
+    return () => window.removeEventListener('storage', handleStorageUpdate);
+  }, [currentUser?.email, currentUser?.phone]);
+
+  useEffect(() => {
+    setMessagesPage(1);
+  }, [userMessages.length]);
+
+  const messagesTotalPages = Math.max(1, Math.ceil(userMessages.length / MESSAGES_PER_PAGE));
+  const visibleMessages = userMessages.slice(
+    (messagesPage - 1) * MESSAGES_PER_PAGE,
+    messagesPage * MESSAGES_PER_PAGE
+  );
 
   const handleChange = (e) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    const localMessage = {
+      id: `contact-${Date.now()}`,
+      name: formData.name,
+      email: formData.email,
+      phone: formData.phone,
+      phone_number: formData.phone,
+      subject: formData.subject,
+      message: formData.message,
+      status: 'pending',
+      created_at: new Date().toISOString()
+    };
+
+    try {
+      const savedMessage = await createContactMessage({
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone,
+        phone_number: formData.phone,
+        subject: formData.subject,
+        message: formData.message
+      });
+      const globalMessages = JSON.parse(localStorage.getItem('maha_contact_messages') || '[]');
+      globalMessages.unshift(savedMessage?.id ? savedMessage : localMessage);
+      localStorage.setItem('maha_contact_messages', JSON.stringify(globalMessages));
+      setUserMessages((prev) => [normalizeContactMessage(savedMessage?.id ? savedMessage : localMessage), ...prev]);
+      setMessagesPage(1);
+    } catch (error) {
+      console.error('Failed to sync contact message with backend.', error);
+      const globalMessages = JSON.parse(localStorage.getItem('maha_contact_messages') || '[]');
+      globalMessages.unshift(localMessage);
+      localStorage.setItem('maha_contact_messages', JSON.stringify(globalMessages));
+      setUserMessages((prev) => [normalizeContactMessage(localMessage), ...prev]);
+      setMessagesPage(1);
+    }
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 4000);
-    setFormData({ name: '', email: '', phone: '', subject: '', message: '' });
+    setFormData({
+      name: currentUser?.name || '',
+      email: currentUser?.email || '',
+      phone: currentUser?.phone || '',
+      subject: '',
+      message: ''
+    });
   };
 
   const itemVariants = {
@@ -613,6 +741,177 @@ export default function ContactPage({ onOpenReservation }) {
                 </div>
               </div>
             </motion.div>
+          </div>
+        </div>
+      </section>
+
+      <section style={{
+        padding: '0 2rem 5rem',
+        backgroundColor: 'var(--canvas-primary)'
+      }}>
+        <div className="container" style={{ maxWidth: '900px', margin: '0 auto' }}>
+          <div style={{
+            backgroundColor: 'var(--canvas-secondary)',
+            border: '1px solid var(--border-light)',
+            borderRadius: '12px',
+            overflow: 'hidden'
+          }}>
+            <div style={{
+              padding: '1.5rem',
+              borderBottom: '1px solid var(--border-light)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: '1rem',
+              alignItems: 'center',
+              flexWrap: 'wrap'
+            }}>
+              <div>
+                <span style={{
+                  display: 'block',
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.22em',
+                  textTransform: 'uppercase',
+                  color: 'var(--gold-antique)',
+                  marginBottom: '0.35rem'
+                }}>
+                  MESSAGE HISTORY
+                </span>
+                <h3 style={{
+                  fontFamily: 'var(--font-heading)',
+                  fontSize: '1.35rem',
+                  fontWeight: 300,
+                  color: 'var(--text-dark)'
+                }}>
+                  My Contact Messages
+                </h3>
+              </div>
+              {currentUser && (
+                <span style={{
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.76rem',
+                  color: 'var(--text-muted)'
+                }}>
+                  {userMessages.length} submitted
+                </span>
+              )}
+            </div>
+
+            {!currentUser ? (
+              <div style={{ padding: '2rem', textAlign: 'center' }}>
+                <p style={{
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.9rem',
+                  color: 'var(--text-muted)',
+                  marginBottom: '1rem'
+                }}>
+                  Sign in to view your submitted contact messages.
+                </p>
+                <a href="#/signin" style={{
+                  display: 'inline-flex',
+                  padding: '0.75rem 1.5rem',
+                  border: '1px solid var(--gold-antique)',
+                  color: 'var(--gold-antique)',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.15em',
+                  textTransform: 'uppercase'
+                }}>
+                  Sign In
+                </a>
+              </div>
+            ) : userMessages.length === 0 ? (
+              <div style={{
+                padding: '2rem',
+                textAlign: 'center',
+                fontFamily: 'var(--font-body)',
+                fontSize: '0.9rem',
+                color: 'var(--text-muted)'
+              }}>
+                No contact messages found for your account.
+              </div>
+            ) : (
+              <>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '760px' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: 'var(--canvas-primary)', borderBottom: '1px solid var(--border-light)' }}>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>ID</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Subject</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Message</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Date</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleMessages.map((message) => (
+                        <tr key={message.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)' }}>{message.id}</td>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.86rem', color: 'var(--text-dark)', fontWeight: 600, textTransform: 'capitalize' }}>{message.subject}</td>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{message.message}</td>
+                          <td style={{ padding: '1rem', fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)' }}>{message.date || 'N/A'}</td>
+                          <td style={{ padding: '1rem' }}>
+                            <span style={{
+                              display: 'inline-flex',
+                              padding: '0.25rem 0.6rem',
+                              borderRadius: '999px',
+                              backgroundColor: message.status === 'Closed' ? 'rgba(14, 110, 86, 0.1)' : 'var(--gold-light)',
+                              color: message.status === 'Closed' ? 'var(--accent-jade)' : 'var(--gold-antique)',
+                              fontFamily: 'var(--font-body)',
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.08em',
+                              textTransform: 'uppercase'
+                            }}>
+                              {message.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{
+                  padding: '1rem 1.5rem',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
+                  backgroundColor: 'var(--canvas-primary)'
+                }}>
+                  <span style={{ fontFamily: 'var(--font-body)', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    Showing {(messagesPage - 1) * MESSAGES_PER_PAGE + 1}-{Math.min(messagesPage * MESSAGES_PER_PAGE, userMessages.length)} of {userMessages.length}
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      disabled={messagesPage === 1}
+                      onClick={() => setMessagesPage((page) => Math.max(1, page - 1))}
+                      style={{ padding: '0.5rem 0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', backgroundColor: 'var(--canvas-secondary)', cursor: messagesPage === 1 ? 'not-allowed' : 'pointer', opacity: messagesPage === 1 ? 0.45 : 1 }}
+                    >
+                      Previous
+                    </button>
+                    <span style={{ fontFamily: 'var(--font-body)', fontSize: '0.78rem', minWidth: '4rem', textAlign: 'center' }}>
+                      {messagesPage} / {messagesTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={messagesPage === messagesTotalPages}
+                      onClick={() => setMessagesPage((page) => Math.min(messagesTotalPages, page + 1))}
+                      style={{ padding: '0.5rem 0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', backgroundColor: 'var(--canvas-secondary)', cursor: messagesPage === messagesTotalPages ? 'not-allowed' : 'pointer', opacity: messagesPage === messagesTotalPages ? 0.45 : 1 }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </section>

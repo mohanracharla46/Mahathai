@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Gift, Mail, Truck, Search, ShieldCheck, Check } from 'lucide-react';
+import { createGiftCard, getGiftCards } from '../lib/api';
 
 const cardThemes = [
   {
@@ -69,24 +70,61 @@ export default function GiftcardPage({ currentUser }) {
 
   const activeAmount = customAmount ? parseFloat(customAmount) || 0 : presetAmount;
 
-  const handlePurchaseSubmit = (e) => {
+  const handlePurchaseSubmit = async (e) => {
     e.preventDefault();
     if (activeAmount <= 0) return;
     setIsCheckingOut(true);
 
-    // Simulate premium transaction validation
-    setTimeout(() => {
+    try {
+      await createGiftCard({
+        user_id: currentUser?.id || null,
+        card_type: cardType,
+        theme: selectedTheme.id,
+        theme_name: selectedTheme.name,
+        amount: activeAmount,
+        balance: activeAmount,
+        recipient_name: giftForm.recipientName,
+        recipient_email: giftForm.recipientEmail,
+        sender_name: giftForm.senderName,
+        sender_email: giftForm.senderEmail,
+        shipping_address: giftForm.shippingAddress,
+        message: giftForm.customMessage,
+        custom_message: giftForm.customMessage,
+        delivery_date: giftForm.deliveryDate
+      });
+    } catch (error) {
+      console.error('Failed to sync gift card with backend.', error);
+    } finally {
       setIsCheckingOut(false);
       setIsPurchased(true);
-    }, 1800);
+    }
   };
 
-  const handleCheckBalance = (e) => {
+  const handleCheckBalance = async (e) => {
     e.preventDefault();
     if (!cardCode.trim()) return;
 
     setIsCheckingBalance(true);
     setBalanceResult(null);
+
+    try {
+      const giftCards = await getGiftCards();
+      const matchedCard = giftCards.find((card) => {
+        const values = [card.code, card.card_code, card.gift_code, card.id].filter(Boolean).map(String);
+        return values.some((value) => value.toLowerCase() === cardCode.trim().toLowerCase());
+      });
+      if (matchedCard) {
+        setBalanceResult({
+          success: true,
+          balance: Number(matchedCard.balance ?? matchedCard.amount ?? 0),
+          message: 'Gift card balance found.'
+        });
+        setIsCheckingBalance(false);
+        return;
+      }
+    } catch (error) {
+      console.error('Failed to check gift card balance with backend.', error);
+    }
 
     setTimeout(() => {
       setIsCheckingBalance(false);

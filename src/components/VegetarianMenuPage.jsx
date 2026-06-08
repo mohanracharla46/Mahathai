@@ -1,10 +1,77 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Star, ArrowLeft, Leaf, Heart, Sprout } from 'lucide-react';
+import { Star, ArrowLeft, Leaf, Heart, Sprout, Search, X } from 'lucide-react';
 import { menuData } from './MenuSection';
+import CustomizeModal from './CustomizeModal';
+import { loadCustomerMenuItems } from '../lib/menuApi';
+
+const PRICE_RANGES = [
+  { label: 'All Prices', min: 0, max: Infinity },
+  { label: 'Under $15', min: 0, max: 15 },
+  { label: '$15 - $25', min: 15, max: 25 },
+  { label: '$25 - $40', min: 25, max: 40 },
+  { label: 'Above $40', min: 40, max: Infinity }
+];
 
 export default function VegetarianMenuPage({ onOpenReservation, cart = {}, addToCart, removeFromCart }) {
-  const items = menuData['Vegetarian'];
+  const [items, setItems] = useState(menuData['Vegetarian'] || []);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedPriceRange, setSelectedPriceRange] = useState(0);
+  const [customizingItem, setCustomizingItem] = useState(null);
+
+  useEffect(() => {
+    loadCustomerMenuItems(true)
+      .then((grouped) => setItems((grouped.Vegetarian || []).filter((item) => item.availability !== false)))
+      .catch((error) => console.error('Failed to load vegetarian menu items.', error));
+  }, []);
+
+  const visibleItems = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const searchedItems = query
+      ? items.filter((item) => (
+        item.name?.toLowerCase().includes(query) ||
+        item.description?.toLowerCase().includes(query)
+      ))
+      : items;
+    const { min, max } = PRICE_RANGES[selectedPriceRange];
+    return searchedItems.filter((item) => Number(item.price || 0) >= min && Number(item.price || 0) < max);
+  }, [items, searchQuery, selectedPriceRange]);
+
+  const hasActiveFilters = searchQuery.trim() || selectedPriceRange !== 0;
+
+  const clearFilters = () => {
+    setSearchQuery('');
+    setSelectedPriceRange(0);
+  };
+
+  const handleConfirmCustomization = (customization) => {
+    if (!customizingItem) return;
+
+    const addonsTotal = (customization.addons || []).reduce((sum, addon) => sum + Number(addon.price || 0), 0);
+    const addonNames = (customization.addons || []).map((addon) => addon.name).join(', ');
+    const selectedSize = customization.size?.name || '';
+    const selectedProtein = customization.protein?.name || '';
+    const proteinPrice = customization.protein ? Number(customization.protein.price || 0) : 0;
+    const basePrice = customization.size ? Number(customization.size.price || 0) : Number(customizingItem.price || 0);
+    const customId = [
+      customizingItem.id,
+      selectedSize,
+      selectedProtein,
+      customization.spice,
+      addonNames,
+      customization.requirements
+    ].filter(Boolean).join('|');
+
+    addToCart({
+      ...customizingItem,
+      id: customId,
+      baseId: customizingItem.id,
+      price: Number((basePrice + proteinPrice + addonsTotal).toFixed(2)),
+      name: `${customizingItem.name} (${[selectedSize, selectedProtein, customization.spice].filter(Boolean).join(', ')})`,
+      customization
+    });
+    setCustomizingItem(null);
+  };
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -157,12 +224,103 @@ export default function VegetarianMenuPage({ onOpenReservation, cart = {}, addTo
               fontFamily: 'var(--font-body)', fontSize: '0.9rem',
               color: 'var(--text-muted)', fontWeight: 300
             }}>
-              {items.length} dishes available
+              {visibleItems.length} dishes available
             </p>
           </div>
 
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gap: '1rem',
+            alignItems: 'center',
+            margin: '0 auto 2.5rem',
+            maxWidth: '980px',
+            backgroundColor: 'var(--canvas-secondary)',
+            border: '1px solid var(--border-light)',
+            borderRadius: '8px',
+            padding: '1rem'
+          }}>
+            <div style={{ position: 'relative' }}>
+              <span style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', display: 'flex' }}>
+                <Search size={15} />
+              </span>
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search vegetarian dishes..."
+                style={{
+                  width: '100%',
+                  padding: '0.7rem 0.9rem 0.7rem 2.35rem',
+                  border: '1px solid var(--border-light)',
+                  borderRadius: '6px',
+                  backgroundColor: 'var(--canvas-primary)',
+                  color: 'var(--text-dark)',
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '0.85rem',
+                  outline: 'none'
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {PRICE_RANGES.map((range, index) => {
+                const active = selectedPriceRange === index;
+                return (
+                  <button
+                    key={range.label}
+                    type="button"
+                    onClick={() => setSelectedPriceRange(index)}
+                    style={{
+                      padding: '0.45rem 0.85rem',
+                      borderRadius: '9999px',
+                      border: `1px solid ${active ? '#6B9E3A' : 'var(--border-light)'}`,
+                      backgroundColor: active ? '#6B9E3A' : 'var(--canvas-primary)',
+                      color: active ? '#fff' : 'var(--text-muted)',
+                      fontFamily: 'var(--font-body)',
+                      fontSize: '0.72rem',
+                      fontWeight: active ? 700 : 500,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {range.label}
+                  </button>
+                );
+              })}
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.3rem',
+                    padding: '0.45rem 0.75rem',
+                    borderRadius: '6px',
+                    border: '1px solid #6B9E3A',
+                    backgroundColor: 'rgba(107,158,58,0.1)',
+                    color: '#6B9E3A',
+                    fontFamily: 'var(--font-body)',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <X size={12} /> Clear
+                </button>
+              )}
+            </div>
+          </div>
+
           <AnimatePresence mode="wait">
+            {visibleItems.length === 0 ? (
+              <motion.div key="empty-vegetarian" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ textAlign: 'center', padding: '4rem 1rem' }}>
+                <p style={{ fontFamily: 'var(--font-heading)', fontSize: '1.4rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>No vegetarian dishes match this filter.</p>
+                <button type="button" onClick={clearFilters} className="card-btn">Clear Filters</button>
+              </motion.div>
+            ) : (
             <motion.div
+              key={`${searchQuery}-${selectedPriceRange}`}
               className="menu-page-grid"
               variants={containerVariants}
               initial="hidden"
@@ -173,7 +331,7 @@ export default function VegetarianMenuPage({ onOpenReservation, cart = {}, addTo
                 gap: '2rem'
               }}
             >
-              {items.map((item) => (
+              {visibleItems.map((item) => (
                 <motion.div
                   key={item.id}
                   variants={itemVariants}
@@ -247,7 +405,7 @@ export default function VegetarianMenuPage({ onOpenReservation, cart = {}, addTo
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  addToCart(item);
+                                  setCustomizingItem(item);
                                 }}
                                 className="qty-btn"
                                 style={{ border: 'none', background: 'none', color: 'var(--text-dark)', cursor: 'pointer', fontWeight: 'bold' }}
@@ -262,7 +420,7 @@ export default function VegetarianMenuPage({ onOpenReservation, cart = {}, addTo
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              addToCart(item);
+                              setCustomizingItem(item);
                             }}
                             className="card-btn"
                           >
@@ -275,9 +433,21 @@ export default function VegetarianMenuPage({ onOpenReservation, cart = {}, addTo
                 </motion.div>
               ))}
             </motion.div>
+            )}
           </AnimatePresence>
         </div>
       </section>
+
+      {customizingItem && (
+        <CustomizeModal
+          item={customizingItem}
+          cart={cart}
+          onClose={() => setCustomizingItem(null)}
+          onConfirm={handleConfirmCustomization}
+          onAddSuggestion={addToCart}
+          onRemoveSuggestion={removeFromCart}
+        />
+      )}
 
       {/* Cross-navigation */}
       <section style={{

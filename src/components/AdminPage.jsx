@@ -334,7 +334,7 @@ const getApiRecord = (payload) => payload?.data || payload?.record || payload?.a
 
 const PAGE_SIZE = 10;
 const fallbackMenuItemImage = 'https://images.unsplash.com/photo-1559314809-0d155014e29e?auto=format&fit=crop&q=80&w=200';
-const dinnerSubcategories = ['Appetizers', 'Salads', 'Soups & Claypots', 'Noodle Bar', 'Curry Kitchen', 'Rice & Wok', 'Street Kitchen', 'From the Sea', 'Chef’s Table', 'Plant-Based', 'Sweet Endings', 'Beverages & Sides'];
+const dinnerSubcategories = ['Appetizers', 'Salads', 'Soups & Claypots', 'Soups & Regional', 'Noodle Bar', 'Curry Kitchen', 'Rice & Wok', 'Street Kitchen', 'From the Sea', 'Chef’s Table', 'Plant-Based', 'Sweet Endings', 'Beverages & Sides'];
 const customerMenuCategories = ['Lunch', 'Dinner', 'Vegetarian'];
 const adminMenuCategoryNames = [...dinnerSubcategories, ...customerMenuCategories];
 const defaultDinnerSubcategory = dinnerSubcategories[0];
@@ -1895,7 +1895,7 @@ export default function AdminPage({ currentUser = null }) {
   const filteredUsers = useMemo(() => {
     const query = searchQuery.toLowerCase();
 
-    return usersList
+    return sortByIdAscending(usersList
       .map((user) => {
         const userOrders = orders.filter((order) => userMatchesRecord(user, order));
         return {
@@ -1910,12 +1910,13 @@ export default function AdminPage({ currentUser = null }) {
         u.email?.toLowerCase().includes(query) ||
         u.phone?.toLowerCase().includes(query) ||
         u.role?.toLowerCase().includes(query) ||
+        String(u.id || '').toLowerCase().includes(query) ||
         String(u.pointsRemaining || '').includes(query) ||
         String(u.createdAt || '').toLowerCase().includes(query) ||
         String(u.lastOrderedOn || '').toLowerCase().includes(query) ||
         (u.followingEmail ? 'yes email true following' : 'no email false').includes(query) ||
         (u.followingSms ? 'yes sms true following' : 'no sms false').includes(query)
-      );
+      ));
   }, [usersList, orders, bookings, searchQuery]);
 
   const filteredFeedback = useMemo(() => {
@@ -2999,9 +3000,10 @@ export default function AdminPage({ currentUser = null }) {
                   </div>
 
                   <div style={{ backgroundColor: 'var(--canvas-primary)', border: '1px solid var(--border-light)', borderRadius: '8px', boxShadow: 'var(--shadow-soft)', overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '1280px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '1360px' }}>
                       <thead>
                         <tr style={{ borderBottom: '2px solid var(--border-light)', backgroundColor: 'var(--canvas-secondary)' }}>
+                          <th style={{ padding: '1rem', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>User ID</th>
                           <th style={{ padding: '1rem', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>User Name</th>
                           <th style={{ padding: '1rem', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Email Address</th>
                           <th style={{ padding: '1rem', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Phone Number</th>
@@ -3018,6 +3020,7 @@ export default function AdminPage({ currentUser = null }) {
                       <tbody>
                         {visibleUsers.map((user, idx) => (
                           <tr key={user.id || user.email || idx} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                            <td style={{ padding: '1rem', fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-dark)' }}>{user.id || 'N/A'}</td>
                             <td style={{ padding: '1rem', fontSize: '0.8rem', fontWeight: 600 }}>{user.name}</td>
                             <td style={{ padding: '1rem', fontSize: '0.8rem' }}>{user.email}</td>
                             <td style={{ padding: '1rem', fontSize: '0.8rem' }}>{user.phone}</td>

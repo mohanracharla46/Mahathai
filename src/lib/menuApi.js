@@ -2,7 +2,7 @@ import { getMenuCategories, getMenuItems } from './api';
 import { menuData } from '../components/MenuSection';
 
 export const customerMenuCategories = ['Lunch', 'Dinner', 'Vegetarian'];
-export const dinnerSubcategories = ['Appetizers', 'Salads', 'Soups & Claypots', 'Noodle Bar', 'Curry Kitchen', 'Rice & Wok', 'Street Kitchen', 'From the Sea', 'Chef’s Table', 'Plant-Based', 'Sweet Endings', 'Beverages & Sides'];
+export const dinnerSubcategories = ['Appetizers', 'Salads', 'Soups & Claypots', 'Soups & Regional', 'Noodle Bar', 'Curry Kitchen', 'Rice & Wok', 'Street Kitchen', 'From the Sea', 'Chef’s Table', 'Plant-Based', 'Sweet Endings', 'Beverages & Sides'];
 
 const fallbackMenuImage = 'https://images.unsplash.com/photo-1559314809-0d155014e29e?auto=format&fit=crop&q=80&w=600';
 const resolveDinnerSubcategory = (value) => {

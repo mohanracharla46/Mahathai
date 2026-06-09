@@ -267,6 +267,8 @@ export default function App() {
   }, [currentUser]);
 
   const addToCart = (item) => {
+    setIsCartCheckedOut(false);
+    setIsCartCheckoutFormOpen(false);
     setCart((prevCart) => {
       const existing = prevCart[item.id];
       if (existing) {

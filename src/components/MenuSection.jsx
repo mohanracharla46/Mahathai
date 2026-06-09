@@ -172,6 +172,10 @@ export const menuData = {
   'Soups & Claypots': [
     
    
+  ],
+  'Soups & Regional': [
+   
+   
   ]
 };
 
@@ -181,6 +185,7 @@ const rawDinnerList = [
   ...menuData['Appetizers'],
   ...menuData['Salads'],
   ...menuData['Soups & Claypots'],
+  ...menuData['Soups & Regional'],
   ...menuData['Noodle Bar'],
   ...menuData['Curry Kitchen'],
   ...menuData['Rice & Wok'],

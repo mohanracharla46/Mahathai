@@ -15,7 +15,7 @@ export default function Footer() {
             <div className="divider-line" />
           </div>
         </div>
-      </div>
+      </div> 
 
       {/* 2. Main Footer Grid */}
       <div className="footer-main-content">

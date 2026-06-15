@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { User, Mail, Phone, Calendar, ShoppingBag, ShieldCheck, LogOut, ArrowLeft, Award, Clock, MessageSquare, Star } from 'lucide-react';
+import { User, Mail, Phone, Calendar, ShoppingBag, ShieldCheck, LogOut, ArrowLeft, Award, Clock, MessageSquare, Star, ExternalLink } from 'lucide-react';
 import { createConciergeInquiry, createFeedback, getConciergeInquiries, getOrders, getReservations, updateUser } from '../lib/api';
+import { getOrderItemLines } from '../lib/orderItems';
 
 const formatProfileDate = (value) => {
   if (!value) return 'Date pending';
@@ -31,28 +32,6 @@ const formatProfileTime = (value) => {
 const formatStatus = (value) => {
   if (!value) return 'Pending';
   return String(value).charAt(0).toUpperCase() + String(value).slice(1).toLowerCase();
-};
-
-const getOrderItemSize = (item) => {
-  if (item.size?.name) return item.size.name;
-  if (item.size_option?.name) return item.size_option.name;
-  if (item.order_item_size?.name) return item.order_item_size.name;
-  if (item.size_name || item.selected_size) return item.size_name || item.selected_size;
-  const match = String(item.special_notes || '').match(/Size:\s*([^|]+)/i);
-  return match ? match[1].trim() : '';
-};
-
-const formatOrderItemSummary = (item) => {
-  const name = item.menu_item?.name || item.menuItem?.name || item.name || 'Menu item';
-  const size = getOrderItemSize(item);
-  const proteinMatch = String(item.special_notes || '').match(/Protein:\s*([^|]+)/i);
-  const protein = item.protein?.name || item.selected_protein || (proteinMatch ? proteinMatch[1].trim() : '');
-  const spice = item.spice_level ? `Spice: ${item.spice_level}` : '';
-  const addons = Array.isArray(item.addons) && item.addons.length > 0
-    ? `Add-ons: ${item.addons.map((addon) => addon.name).join(', ')}`
-    : '';
-  const details = [spice, protein ? `Protein: ${protein}` : '', addons, size ? `Size: ${size}` : ''].filter(Boolean).join('; ');
-  return `${item.quantity || 1}x ${name}${details ? ` [${details}]` : ''}`;
 };
 
 const normalizeReservation = (booking) => ({
@@ -172,6 +151,7 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
   const [profileNotice, setProfileNotice] = useState(null);
   const [freshBookings, setFreshBookings] = useState([]);
   const [freshOrders, setFreshOrders] = useState([]);
+  const [hasLoadedOrders, setHasLoadedOrders] = useState(false);
   const [bookingsTotalItems, setBookingsTotalItems] = useState(0);
   const [ordersTotalItems, setOrdersTotalItems] = useState(0);
   const [bookingsPage, setBookingsPage] = useState(1);
@@ -258,17 +238,17 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
           .map((order) => ({
             id: order.id,
             date: formatProfileDate(order.created_at || order.date),
-            items: order.order_items || (
-              order.items?.length
-              ? order.items.map(formatOrderItemSummary).join(', ')
-              : order.items || 'Order items pending'
-            ),
+            itemLines: getOrderItemLines(order),
+            items: getOrderItemLines(order).join(' | '),
             total: Number(order.total_amount || order.total || 0),
             type: order.service_type === 'pickup' || order.order_type === 'pickup' ? 'Pickup' : 'Delivery',
-            status: formatStatus(order.status)
+            status: formatStatus(order.status),
+            uberTrackingUrl: order.uber_tracking_url || order.uberTrackingUrl || '',
+            uberDeliveryStatus: order.uber_delivery_status || order.uberDeliveryStatus || ''
           }))
           .slice(0, PAGE_SIZE);
         setFreshOrders(normalized);
+        setHasLoadedOrders(true);
         setOrdersTotalItems(orders.total ?? normalized.length);
       })
       .catch((error) => {
@@ -279,6 +259,32 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
       ignore = true;
     };
   }, [currentUser?.id, currentUser?.email, ordersPage]);
+
+  useEffect(() => {
+    const removeDeletedOrder = (deletedOrderId) => {
+      if (deletedOrderId === undefined || deletedOrderId === null) return;
+      setFreshOrders((orders) => orders.filter((order) => String(order.id) !== String(deletedOrderId)));
+      setOrdersTotalItems((total) => Math.max(0, total - 1));
+      setHasLoadedOrders(true);
+    };
+    const handleOrderDeleted = (event) => removeDeletedOrder(event.detail?.orderId);
+    const handleOrderStorageUpdate = (event) => {
+      if (event.key !== 'maha_last_deleted_order' || !event.newValue) return;
+
+      try {
+        removeDeletedOrder(JSON.parse(event.newValue).orderId);
+      } catch (error) {
+        console.error('Failed to process deleted order update.', error);
+      }
+    };
+
+    window.addEventListener('maha-order-deleted', handleOrderDeleted);
+    window.addEventListener('storage', handleOrderStorageUpdate);
+    return () => {
+      window.removeEventListener('maha-order-deleted', handleOrderDeleted);
+      window.removeEventListener('storage', handleOrderStorageUpdate);
+    };
+  }, []);
 
   const loadSupportTickets = async () => {
     if (!currentUser?.id) return;
@@ -341,7 +347,13 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
         time: formatProfileTime(booking.seating_time || booking.time),
         status: formatStatus(booking.status)
       }));
-  const ordersList = freshOrders.length > 0 ? freshOrders : (currentUser.orders || []);
+  const ordersList = hasLoadedOrders
+    ? freshOrders
+    : (currentUser.orders || []).map((order) => ({
+        ...order,
+        uberTrackingUrl: order.uberTrackingUrl || order.uber_tracking_url || '',
+        uberDeliveryStatus: order.uberDeliveryStatus || order.uber_delivery_status || ''
+      }));
   const bookingsTotalCount = bookingsTotalItems || bookingsList.length;
   const ordersTotalCount = ordersTotalItems || ordersList.length;
   const bookingsTotalPages = Math.max(1, Math.ceil(bookingsTotalCount / PAGE_SIZE));
@@ -997,7 +1009,13 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', borderTop: '1px solid rgba(11, 54, 61, 0.06)', paddingTop: '1rem' }}>
                         <div>
                           <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Items Ordered</span>
-                          <span style={{ fontSize: '0.85rem', color: 'var(--text-dark)', fontWeight: 500 }}>{order.items}</span>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                            {(order.itemLines || getOrderItemLines(order)).map((item, index) => (
+                              <span key={`${order.id}-item-${index}`} style={{ fontSize: '0.85rem', color: 'var(--text-dark)', fontWeight: 500 }}>
+                                {item}
+                              </span>
+                            ))}
+                          </div>
                         </div>
                         <div>
                           <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Total Cost</span>
@@ -1005,14 +1023,49 @@ export default function ProfilePage({ currentUser, onSignOut, onUpdateProfile })
                         </div>
                       </div>
 
-                      <div style={{ borderTop: '1px solid rgba(11, 54, 61, 0.04)', paddingTop: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ borderTop: '1px solid rgba(11, 54, 61, 0.04)', paddingTop: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
                         <div>
                           <span style={{ display: 'block', fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.15rem' }}>Service Type</span>
                           <span style={{ fontSize: '0.8rem', color: 'var(--text-dark)' }}>{order.type}</span>
+                          {order.uberDeliveryStatus && (
+                            <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                              Uber: {formatStatus(order.uberDeliveryStatus)}
+                            </span>
+                          )}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                          <Clock size={12} />
-                          Ordered on {order.date}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                          {order.type === 'Delivery'
+                            && order.uberTrackingUrl
+                            && !['delivered', 'completed'].includes(String(order.status || '').toLowerCase())
+                            && (
+                            <a
+                              href={order.uberTrackingUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.35rem',
+                                padding: '0.48rem 0.75rem',
+                                border: '1px solid var(--gold-antique)',
+                                borderRadius: '4px',
+                                color: 'var(--gold-antique)',
+                                textDecoration: 'none',
+                                fontFamily: 'var(--font-sans)',
+                                fontSize: '0.68rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.08em',
+                                textTransform: 'uppercase'
+                              }}
+                            >
+                              <ExternalLink size={13} />
+                              Track Delivery
+                            </a>
+                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            <Clock size={12} />
+                            Ordered on {order.date}
+                          </div>
                         </div>
                       </div>
                     </div>

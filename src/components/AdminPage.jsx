@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
+import {
   TrendingUp, 
   DollarSign, 
   Briefcase,
@@ -39,6 +39,8 @@ import {
   createMenuCategory,
   createMenuItem,
   createPromoCode,
+  cancelOrderDelivery,
+  deleteOrder,
   deleteMenuItem,
   getCareerApplications,
   getConciergeInquiries,
@@ -52,13 +54,16 @@ import {
   getRewards,
   getUsers,
   isAdminUser,
+  retryOrderDispatch,
   updateCareerApplication,
   updateConciergeInquiry,
   updateContactMessage,
   updateMenuItem,
+  updateOrder,
   updateReservation,
   uploadMenuItemImage
 } from '../lib/api';
+import { getOrderItemLines } from '../lib/orderItems';
 
 // Initial Mock Orders if none in localStorage
 const defaultMockOrders = [
@@ -168,6 +173,22 @@ const defaultMockCoupons = [
   }
 ];
 
+const formatOrderStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  const labels = {
+    pending: 'Pending',
+    preparing: 'Preparing',
+    'ready for pickup': 'Ready for Pickup',
+    'out for delivery': 'Out for Delivery',
+    delivered: 'Delivered',
+    completed: 'Delivered',
+    cancelled: 'Cancelled',
+    canceled: 'Cancelled'
+  };
+
+  return labels[normalized] || 'Pending';
+};
+
 const normalizeApiOrder = (order) => ({
   id: order.id,
   userId: order.user_id || order.user?.id || null,
@@ -176,38 +197,17 @@ const normalizeApiOrder = (order) => ({
   customerName: order.full_name || order.name || order.customer_name || order.user?.full_name || order.user?.name || 'Guest',
   customerEmail: order.email || order.customer_email || order.user?.email || 'guest@example.com',
   customerPhone: order.phone || order.phone_number || order.user?.phone || 'N/A',
-  items: order.order_items || (
-    order.items?.length
-    ? order.items.map(formatApiOrderItemSummary).join(', ')
-    : 'Order items pending'
-  ),
+  itemLines: getOrderItemLines(order),
+  items: getOrderItemLines(order).join(' | '),
   total: Number(order.total_amount || 0),
   type: order.service_type === 'pickup' || order.order_type === 'pickup' ? 'Pickup' : 'Delivery',
   address: order.delivery_address || 'Pickup',
-  status: order.status ? order.status.charAt(0).toUpperCase() + order.status.slice(1) : 'Pending',
+  status: formatOrderStatus(order.status),
+  uberDeliveryId: order.uber_delivery_id || '',
+  uberDeliveryStatus: order.uber_delivery_status || '',
+  uberTrackingUrl: order.uber_tracking_url || '',
+  uberDeliveryError: order.uber_delivery_error || '',
 });
-
-const getOrderItemSize = (item) => {
-  if (item.size?.name) return item.size.name;
-  if (item.size_option?.name) return item.size_option.name;
-  if (item.order_item_size?.name) return item.order_item_size.name;
-  if (item.size_name || item.selected_size) return item.size_name || item.selected_size;
-  const match = String(item.special_notes || '').match(/Size:\s*([^|]+)/i);
-  return match ? match[1].trim() : '';
-};
-
-const formatApiOrderItemSummary = (item) => {
-  const name = item.menu_item?.name || item.menuItem?.name || item.name || 'Menu item';
-  const size = getOrderItemSize(item);
-  const proteinMatch = String(item.special_notes || '').match(/Protein:\s*([^|]+)/i);
-  const protein = item.protein?.name || item.selected_protein || (proteinMatch ? proteinMatch[1].trim() : '');
-  const spice = item.spice_level ? `Spice: ${item.spice_level}` : '';
-  const addons = Array.isArray(item.addons) && item.addons.length > 0
-    ? `Add-ons: ${item.addons.map((addon) => addon.name).join(', ')}`
-    : '';
-  const details = [spice, protein ? `Protein: ${protein}` : '', addons, size ? `Size: ${size}` : ''].filter(Boolean).join('; ');
-  return `${item.quantity || 1}x ${name}${details ? ` [${details}]` : ''}`;
-};
 
 const normalizeApiPromoCode = (promoCode) => ({
   id: promoCode.id,
@@ -815,6 +815,8 @@ export default function AdminPage({ currentUser = null }) {
 
   const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [isCancellingUberDelivery, setIsCancellingUberDelivery] = useState(false);
+  const [uberCancellationNotice, setUberCancellationNotice] = useState(null);
 
   // Initialize Admin Data
   useEffect(() => {
@@ -1154,20 +1156,140 @@ export default function AdminPage({ currentUser = null }) {
   };
 
   // --- ORDER OPERATIONS ---
-  const handleUpdateOrderStatus = (orderId, newStatus) => {
-    const updated = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
-    setOrders(updated);
-    localStorage.setItem('maha_global_orders', JSON.stringify(updated));
-    updateUserProfileData(orderId, 'orders', { status: newStatus });
-    showAdminNotice('success', `Order status updated to ${newStatus}.`);
+  const refreshOrders = async () => {
+    const { records, total } = await fetchAllAdminPages(getOrders, {
+      search: searchQuery,
+      status: statusFilter,
+      order_type: orderTypeFilter,
+      sort_by: 'id',
+      sort_direction: 'asc',
+      order_by: 'id',
+      order: 'asc'
+    }, normalizeApiOrder);
+    setOrders(records);
+    setOrdersTotalItems(total);
+    localStorage.setItem('maha_global_orders', JSON.stringify(records));
   };
 
-  const handleDeleteOrder = (orderId) => {
-    if (window.confirm('Are you sure you want to remove this order from history?')) {
-      const updated = orders.filter(o => o.id !== orderId);
+  const handleUpdateOrderStatus = async (orderId, newStatus) => {
+    const previousOrders = orders;
+    const updated = orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
+    setOrders(updated);
+    if (selectedOrder?.id === orderId) {
+      setSelectedOrder((prev) => prev ? { ...prev, status: newStatus } : prev);
+    }
+    localStorage.setItem('maha_global_orders', JSON.stringify(updated));
+    updateUserProfileData(orderId, 'orders', { status: newStatus });
+
+    try {
+      const savedOrder = await updateOrder(orderId, { status: newStatus.toLowerCase() });
+      const normalizedOrder = normalizeApiOrder(savedOrder);
+      setOrders((current) => current.map((order) => order.id === orderId ? normalizedOrder : order));
+      if (selectedOrder?.id === orderId) {
+        setSelectedOrder(normalizedOrder);
+      }
+      showAdminNotice('success', `Order status updated to ${newStatus}.`);
+    } catch (error) {
+      setOrders(previousOrders);
+      if (selectedOrder?.id === orderId) {
+        const previousOrder = previousOrders.find((order) => order.id === orderId);
+        setSelectedOrder(previousOrder || selectedOrder);
+      }
+      localStorage.setItem('maha_global_orders', JSON.stringify(previousOrders));
+      console.error('Failed to sync order status with backend.', error);
+      showAdminNotice('error', error.message || 'Order status update failed.');
+    }
+  };
+
+  const handleRetryUberDispatch = async (orderId) => {
+    try {
+      await retryOrderDispatch(orderId);
+      showAdminNotice('success', 'Uber Direct dispatch queued for retry.');
+      await refreshOrders();
+    } catch (error) {
+      showAdminNotice('error', error.message || 'Uber Direct retry failed.');
+    }
+  };
+
+  const handleCancelUberDelivery = async (orderId) => {
+    if (!window.confirm('Cancel this active Uber Direct delivery?')) return;
+
+    setIsCancellingUberDelivery(true);
+    setUberCancellationNotice(null);
+
+    try {
+      const response = await cancelOrderDelivery(orderId);
+      const normalizedOrder = normalizeApiOrder(response.order);
+
+      setOrders((current) => {
+        const updated = current.map((order) => String(order.id) === String(orderId) ? normalizedOrder : order);
+        localStorage.setItem('maha_global_orders', JSON.stringify(updated));
+        return updated;
+      });
+      setSelectedOrder(normalizedOrder);
+      updateUserProfileData(orderId, 'orders', {
+        status: normalizedOrder.status,
+        uberDeliveryStatus: normalizedOrder.uberDeliveryStatus
+      });
+      setUberCancellationNotice({
+        type: 'success',
+        message: `Uber confirmed cancellation. Delivery status: ${normalizedOrder.uberDeliveryStatus || 'Canceled'}.`
+      });
+      showAdminNotice('success', 'Uber Direct delivery cancelled.');
+    } catch (error) {
+      setUberCancellationNotice({
+        type: 'error',
+        message: error.message || 'Uber Direct cancellation failed.'
+      });
+      showAdminNotice('error', error.message || 'Uber Direct cancellation failed.');
+    } finally {
+      setIsCancellingUberDelivery(false);
+    }
+  };
+
+  const removeOrderFromCustomerCaches = (orderId) => {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith('maha_user_')) continue;
+
+      try {
+        const user = JSON.parse(localStorage.getItem(key));
+        if (!Array.isArray(user?.orders)) continue;
+
+        const ordersWithoutDeleted = user.orders.filter((order) => String(order.id) !== String(orderId));
+        if (ordersWithoutDeleted.length !== user.orders.length) {
+          localStorage.setItem(key, JSON.stringify({ ...user, orders: ordersWithoutDeleted }));
+        }
+      } catch (error) {
+        console.error(`Failed to update cached orders for ${key}.`, error);
+      }
+    }
+  };
+
+  const handleDeleteOrder = async (orderId) => {
+    if (!window.confirm('Are you sure you want to permanently delete this order?')) return;
+
+    try {
+      await deleteOrder(orderId);
+
+      const updated = orders.filter((order) => String(order.id) !== String(orderId));
       setOrders(updated);
+      setOrdersTotalItems((total) => Math.max(0, total - 1));
       localStorage.setItem('maha_global_orders', JSON.stringify(updated));
-      showAdminNotice('success', 'Order removed.');
+      removeOrderFromCustomerCaches(orderId);
+
+      if (String(selectedOrder?.id) === String(orderId)) {
+        setSelectedOrder(null);
+        setShowOrderDetailsModal(false);
+      }
+
+      const deletionEvent = { orderId, deletedAt: Date.now() };
+      localStorage.setItem('maha_last_deleted_order', JSON.stringify(deletionEvent));
+      window.dispatchEvent(new CustomEvent('maha-order-deleted', { detail: deletionEvent }));
+      showAdminNotice('success', 'Order permanently deleted.');
+    } catch (error) {
+      console.error('Failed to delete order from backend.', error);
+      showAdminNotice('error', error.message || 'Order could not be deleted.');
     }
   };
 
@@ -2527,8 +2649,12 @@ export default function AdminPage({ currentUser = null }) {
                                 <div style={{ fontWeight: 600 }}>{order.customerName}</div>
                                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{order.customerPhone} | {order.customerEmail}</div>
                               </td>
-                              <td style={{ padding: '1rem', fontSize: '0.8rem', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {order.items}
+                              <td style={{ padding: '1rem', fontSize: '0.8rem', maxWidth: '320px' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                  {(order.itemLines || getOrderItemLines(order)).map((item, index) => (
+                                    <span key={`${order.id}-item-${index}`}>{item}</span>
+                                  ))}
+                                </div>
                               </td>
                               <td style={{ padding: '1rem', fontSize: '0.8rem' }}>
                                 <span style={{ padding: '0.15rem 0.5rem', borderRadius: '4px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', backgroundColor: order.type === 'Delivery' ? 'rgba(14, 110, 86, 0.1)' : 'var(--gold-light)', color: order.type === 'Delivery' ? 'var(--accent-jade)' : 'var(--gold-antique)' }}>
@@ -2544,6 +2670,7 @@ export default function AdminPage({ currentUser = null }) {
                                 >
                                   <option value="Pending">Pending</option>
                                   <option value="Preparing">Preparing</option>
+                                  <option value="Ready for Pickup">Ready for Pickup</option>
                                   <option value="Out for Delivery">Out for Delivery</option>
                                   <option value="Delivered">Delivered</option>
                                   <option value="Cancelled">Cancelled</option>
@@ -2551,7 +2678,7 @@ export default function AdminPage({ currentUser = null }) {
                               </td>
                               <td style={{ padding: '1rem', fontSize: '0.8rem' }}>
                                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                  <button onClick={() => { setSelectedOrder(order); setShowOrderDetailsModal(true); }} style={{ background: 'none', border: 'none', color: 'var(--accent-jade)', cursor: 'pointer' }}><Eye size={16} /></button>
+                                  <button onClick={() => { setSelectedOrder(order); setUberCancellationNotice(null); setShowOrderDetailsModal(true); }} style={{ background: 'none', border: 'none', color: 'var(--accent-jade)', cursor: 'pointer' }}><Eye size={16} /></button>
                                   <button onClick={() => handleDeleteOrder(order.id)} style={{ background: 'none', border: 'none', color: '#db4455', cursor: 'pointer' }}><Trash2 size={16} /></button>
                                 </div>
                               </td>
@@ -3773,7 +3900,7 @@ export default function AdminPage({ currentUser = null }) {
       <AnimatePresence>
         {showOrderDetailsModal && selectedOrder && (
           <div className="luxury-modal-overlay" onClick={() => setShowOrderDetailsModal(false)}>
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="luxury-modal-content" style={{ maxWidth: '460px', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="luxury-modal-content" style={{ width: 'calc(100vw - 2rem)', maxWidth: '760px', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
               <button onClick={() => setShowOrderDetailsModal(false)} className="luxury-modal-close"><X size={20} /></button>
               <div style={{ marginBottom: '1.5rem', borderBottom: '1px solid var(--border-light)', paddingBottom: '0.75rem' }}>
                 <span className="modal-subtitle" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><FileText size={12} /> Ticket Order Receipt</span>
@@ -3804,13 +3931,21 @@ export default function AdminPage({ currentUser = null }) {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', paddingTop: '0.5rem' }}>
                       <span style={{ fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Address:</span>
                       <p style={{ lineHeight: '1.4' }}>{selectedOrder.address}</p>
+                      {selectedOrder.uberDeliveryStatus && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', marginTop: '0.35rem', paddingTop: '0.65rem', borderTop: '1px solid var(--border-light)' }}>
+                          <span style={{ fontSize: '9px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Uber Delivery Status</span>
+                          <strong style={{ color: selectedOrder.status === 'Cancelled' ? '#9F1239' : 'var(--accent-jade)', textTransform: 'capitalize' }}>
+                            {selectedOrder.uberDeliveryStatus}
+                          </strong>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
                 <div className="receipt-box" style={{ margin: '0.5rem 0' }}>
                   <div className="receipt-header">Aromatic Selection Items</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.5rem 0' }}>
-                    {selectedOrder.items.split(/\s+\|\s+|, /).map((item, idx) => (
+                    {(selectedOrder.itemLines || getOrderItemLines(selectedOrder)).map((item, idx) => (
                       <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
                         <span>{item}</span>
                       </div>
@@ -3827,13 +3962,54 @@ export default function AdminPage({ currentUser = null }) {
                     <select value={selectedOrder.status} onChange={(e) => handleUpdateOrderStatus(selectedOrder.id, e.target.value)} style={{ padding: '0.35rem 0.5rem', border: '1px solid var(--border-light)', borderRadius: '4px', fontSize: '0.75rem' }}>
                       <option value="Pending">Pending</option>
                       <option value="Preparing">Preparing</option>
+                      <option value="Ready for Pickup">Ready for Pickup</option>
                       <option value="Out for Delivery">Out for Delivery</option>
                       <option value="Delivered">Delivered</option>
                       <option value="Cancelled">Cancelled</option>
                     </select>
                   </div>
-                  <button onClick={() => setShowOrderDetailsModal(false)} className="btn-filled" style={{ padding: '0.6rem 1.2rem', fontSize: '0.7rem' }}>CLOSE TICKET</button>
+                  {selectedOrder.type === 'Delivery' && (
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      {selectedOrder.uberDeliveryError && !selectedOrder.uberDeliveryId && (
+                        <button
+                          type="button"
+                          onClick={() => handleRetryUberDispatch(selectedOrder.id)}
+                          className="btn-filled"
+                          style={{ padding: '0.55rem 0.8rem', fontSize: '0.65rem', backgroundColor: '#D97706' }}
+                        >
+                          Retry Uber Dispatch
+                        </button>
+                      )}
+                      {selectedOrder.uberDeliveryId && !['Delivered', 'Cancelled'].includes(selectedOrder.status) && (
+                        <button
+                          type="button"
+                          onClick={() => handleCancelUberDelivery(selectedOrder.id)}
+                          disabled={isCancellingUberDelivery}
+                          className="btn-filled"
+                          style={{ padding: '0.55rem 0.8rem', fontSize: '0.65rem', backgroundColor: '#db4455', opacity: isCancellingUberDelivery ? 0.65 : 1, cursor: isCancellingUberDelivery ? 'wait' : 'pointer' }}
+                        >
+                          {isCancellingUberDelivery ? 'Cancelling with Uber...' : 'Cancel Uber Delivery'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
+                {uberCancellationNotice && (
+                  <div
+                    role="status"
+                    style={{
+                      padding: '0.8rem 1rem',
+                      borderRadius: '4px',
+                      border: uberCancellationNotice.type === 'success' ? '1px solid rgba(14,110,86,0.3)' : '1px solid rgba(159,18,57,0.3)',
+                      backgroundColor: uberCancellationNotice.type === 'success' ? 'rgba(14,110,86,0.08)' : 'rgba(159,18,57,0.07)',
+                      color: uberCancellationNotice.type === 'success' ? 'var(--accent-jade)' : '#9F1239',
+                      fontSize: '0.78rem',
+                      fontWeight: 600
+                    }}
+                  >
+                    {uberCancellationNotice.message}
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>

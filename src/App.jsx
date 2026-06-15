@@ -23,6 +23,7 @@ import AdminPage from './components/AdminPage';
 import logoImg from './assets/mahathailogo_v2.png';
 import { getOrders, getPromoCodes, getReservations, isAdminUser } from './lib/api';
 import { createOrderWithItemsAndAddons } from './lib/orderService';
+import { getOrderItemLines } from './lib/orderItems';
 
 const pickupTimeOptions = Array.from({ length: ((21 * 60 + 40) - (11 * 60)) / 10 + 1 }, (_, index) => {
   const totalMinutes = 11 * 60 + index * 10;
@@ -150,7 +151,8 @@ export default function App() {
         .map((order) => ({
           id: order.id || `o-${Date.now()}`,
           date: order.created_at ? new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-          items: order.items || order.order_items || 'Online order',
+          itemLines: getOrderItemLines(order, 'Online order'),
+          items: getOrderItemLines(order, 'Online order').join(' | '),
           total: Number(order.total_amount || order.total || 0),
           type: order.service_type || order.order_type || 'Delivery',
           status: order.status || 'Pending'
@@ -242,6 +244,7 @@ export default function App() {
   }, [currentUser]);
   const [cartCheckoutData, setCartCheckoutData] = useState({
     name: '',
+    email: '',
     phone: '',
     address: '',
     pickupTime: '11:00',
@@ -249,18 +252,22 @@ export default function App() {
   });
   const [isCartCheckedOut, setIsCartCheckedOut] = useState(false);
   const [isCartCheckoutFormOpen, setIsCartCheckoutFormOpen] = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
+  const [isCheckoutSubmitting, setIsCheckoutSubmitting] = useState(false);
 
   useEffect(() => {
     if (currentUser) {
       setCartCheckoutData((prev) => ({
         ...prev,
         name: currentUser.name || '',
+        email: currentUser.email || '',
         phone: currentUser.phone || ''
       }));
     } else {
       setCartCheckoutData((prev) => ({
         ...prev,
         name: '',
+        email: '',
         phone: ''
       }));
     }
@@ -798,69 +805,62 @@ export default function App() {
                           onSubmit={async (e) => {
                             e.preventDefault();
                             const cartItems = Object.values(cart);
-                            const subtotal = getCartTotal();
-                            const total = getCartFinalTotal();
                             const orderedItems = cartItems.map(item => `${item.quantity}x ${formatCartItemDetails(item)}`).join(' | ');
 
-                            setIsCartCheckedOut(true);
-                            setIsCartCheckoutFormOpen(false);
-
-                            // Add to history if logged in
-                            const newOrder = {
-                              id: 'o-' + Date.now(),
-                              date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                              items: orderedItems,
-                              total,
-                              type: cartCheckoutData.serviceType === 'delivery' ? 'Delivery' : 'Pickup',
-                              status: 'Preparing',
-                              customerName: cartCheckoutData.name,
-                              customerPhone: cartCheckoutData.phone,
-                              customerEmail: currentUser ? currentUser.email : 'guest@example.com',
-                              address: cartCheckoutData.serviceType === 'delivery' ? cartCheckoutData.address : 'Pickup'
-                            };
-                            if (currentUser) {
-                              const updated = {
-                                ...currentUser,
-                                orders: [newOrder, ...currentUser.orders]
-                              };
-                              setCurrentUser(updated);
-                              localStorage.setItem(`maha_user_${currentUser.email}`, JSON.stringify(updated));
-                            }
-
-                            // Store in global list for admin panel
-                            const globalOrders = JSON.parse(localStorage.getItem('maha_global_orders') || '[]');
-                            globalOrders.unshift(newOrder);
-                            localStorage.setItem('maha_global_orders', JSON.stringify(globalOrders));
-                            setCart({});
-                            setCouponCode('');
-                            setCouponDiscount(0);
-                            setAppliedCoupon(null);
-                            setCouponError('');
+                            setCheckoutError('');
+                            setIsCheckoutSubmitting(true);
 
                             try {
-                              await createOrderWithItemsAndAddons({
+                              const createdOrder = await createOrderWithItemsAndAddons({
                                 user_id: currentUser?.id || null,
                                 full_name: cartCheckoutData.name,
-                                name: cartCheckoutData.name,
-                                email: currentUser ? currentUser.email : 'guest@example.com',
+                                email: cartCheckoutData.email,
                                 phone_number: cartCheckoutData.phone,
-                                phone: cartCheckoutData.phone,
                                 order_type: cartCheckoutData.serviceType,
                                 service_type: cartCheckoutData.serviceType,
                                 pickup_time: cartCheckoutData.serviceType === 'pickup' ? cartCheckoutData.pickupTime : null,
                                 delivery_address: cartCheckoutData.serviceType === 'delivery' ? cartCheckoutData.address : null,
                                 suite_apt: null,
-                                promo_code_id: appliedCoupon?.id && !String(appliedCoupon.id).startsWith('c-') ? appliedCoupon.id : null,
-                                subtotal,
-                                discount_amount: couponDiscount,
-                                total_amount: total,
-                                total,
-                                items: orderedItems,
-                                order_items: orderedItems,
-                                status: 'pending'
+                                promo_code_id: appliedCoupon?.id && !String(appliedCoupon.id).startsWith('c-') ? appliedCoupon.id : null
                               }, cartItems);
+
+                              const newOrder = {
+                                id: createdOrder.id,
+                                date: new Date(createdOrder.created_at || Date.now()).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                                items: orderedItems,
+                                total: Number(createdOrder.total_amount || 0),
+                                type: cartCheckoutData.serviceType === 'delivery' ? 'Delivery' : 'Pickup',
+                                status: 'Pending',
+                                customerName: cartCheckoutData.name,
+                                customerPhone: cartCheckoutData.phone,
+                                customerEmail: cartCheckoutData.email,
+                                address: cartCheckoutData.serviceType === 'delivery' ? cartCheckoutData.address : 'Pickup'
+                              };
+
+                              if (currentUser) {
+                                const updated = {
+                                  ...currentUser,
+                                  orders: [newOrder, ...(currentUser.orders || [])]
+                                };
+                                setCurrentUser(updated);
+                                localStorage.setItem(`maha_user_${currentUser.email}`, JSON.stringify(updated));
+                              }
+
+                              const globalOrders = JSON.parse(localStorage.getItem('maha_global_orders') || '[]');
+                              globalOrders.unshift(newOrder);
+                              localStorage.setItem('maha_global_orders', JSON.stringify(globalOrders));
+                              setCart({});
+                              setCouponCode('');
+                              setCouponDiscount(0);
+                              setAppliedCoupon(null);
+                              setCouponError('');
+                              setIsCartCheckedOut(true);
+                              setIsCartCheckoutFormOpen(false);
                             } catch (error) {
-                              console.error('Failed to sync order with backend.', error);
+                              console.error('Failed to create order.', error);
+                              setCheckoutError(error.message || 'We could not place your order. Please try again.');
+                            } finally {
+                              setIsCheckoutSubmitting(false);
                             }
                           }}
                           style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}
@@ -871,18 +871,39 @@ export default function App() {
                               <button
                                 type="button"
                                 className={`service-btn ${cartCheckoutData.serviceType === 'delivery' ? 'active' : ''}`}
-                                onClick={() => setCartCheckoutData({ ...cartCheckoutData, serviceType: 'delivery' })}
+                                onClick={() => {
+                                  setCartCheckoutData({ ...cartCheckoutData, serviceType: 'delivery' });
+                                  setCheckoutError('');
+                                }}
                               >
                                 Delivery
                               </button>
                               <button
                                 type="button"
                                 className={`service-btn ${cartCheckoutData.serviceType === 'pickup' ? 'active' : ''}`}
-                                onClick={() => setCartCheckoutData({ ...cartCheckoutData, serviceType: 'pickup' })}
+                                onClick={() => {
+                                  setCartCheckoutData({ ...cartCheckoutData, serviceType: 'pickup' });
+                                  setCheckoutError('');
+                                }}
                               >
                                 Pick Up
                               </button>
                             </div>
+                          </div>
+
+                          <div>
+                            <label className="block font-sans text-[10px] font-bold tracking-widest uppercase text-dark mb-1" style={{ fontSize: '10px' }}>
+                              Email Address
+                            </label>
+                            <input
+                              type="email"
+                              required
+                              placeholder="you@example.com"
+                              value={cartCheckoutData.email}
+                              onChange={(e) => setCartCheckoutData({ ...cartCheckoutData, email: e.target.value })}
+                              className="w-full px-4 py-2 font-sans text-sm bg-white rounded border focus:outline-none"
+                              style={{ width: '100%', padding: '0.6rem 0.8rem', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', outline: 'none' }}
+                            />
                           </div>
 
                           <div>
@@ -909,7 +930,9 @@ export default function App() {
                               required
                               placeholder="+1 (555) 019-2834"
                               value={cartCheckoutData.phone}
-                              onChange={(e) => setCartCheckoutData({ ...cartCheckoutData, phone: e.target.value })}
+                              onChange={(e) => {
+                                setCartCheckoutData({ ...cartCheckoutData, phone: e.target.value });
+                              }}
                               className="w-full px-4 py-2 font-sans text-sm bg-white rounded border focus:outline-none"
                               style={{ width: '100%', padding: '0.6rem 0.8rem', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', outline: 'none' }}
                             />
@@ -925,7 +948,9 @@ export default function App() {
                                 required
                                 placeholder="Street Address, Apt / Suite"
                                 value={cartCheckoutData.address}
-                                onChange={(e) => setCartCheckoutData({ ...cartCheckoutData, address: e.target.value })}
+                                onChange={(e) => {
+                                  setCartCheckoutData({ ...cartCheckoutData, address: e.target.value });
+                                }}
                                 className="w-full px-4 py-2 font-sans text-sm bg-white rounded border focus:outline-none"
                                 style={{ width: '100%', padding: '0.6rem 0.8rem', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '4px', outline: 'none' }}
                               />
@@ -993,13 +1018,20 @@ export default function App() {
 
                           <div className="order-subtotal-row" style={{ marginTop: '0.5rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-light)' }}>
                             <span className="subtotal-label" style={{ fontSize: '0.75rem' }}>Order Total</span>
-                            <span className="subtotal-price" style={{ fontSize: '1.2rem' }}>${getCartFinalTotal()}.00</span>
+                            <span className="subtotal-price" style={{ fontSize: '1.2rem' }}>${getCartFinalTotal().toFixed(2)}</span>
                           </div>
+
+                          {checkoutError && (
+                            <p role="alert" style={{ fontSize: '0.78rem', color: '#db4455', margin: 0 }}>{checkoutError}</p>
+                          )}
 
                           <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
                             <button
                               type="button"
-                              onClick={() => setIsCartCheckoutFormOpen(false)}
+                              onClick={() => {
+                                setIsCartCheckoutFormOpen(false);
+                                setCheckoutError('');
+                              }}
                               className="btn-filled"
                               style={{ flex: 1, backgroundColor: 'transparent', color: 'var(--text-dark)', border: '1px solid var(--border-medium)', padding: '0.75rem', fontSize: '0.75rem', justifyContent: 'center' }}
                               onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--canvas-secondary)'}
@@ -1009,10 +1041,11 @@ export default function App() {
                             </button>
                             <button
                               type="submit"
+                              disabled={isCheckoutSubmitting}
                               className="btn-filled"
-                              style={{ flex: 2, padding: '0.75rem', fontSize: '0.75rem', justifyContent: 'center' }}
+                              style={{ flex: 2, padding: '0.75rem', fontSize: '0.75rem', justifyContent: 'center', opacity: isCheckoutSubmitting ? 0.65 : 1 }}
                             >
-                              Place Order
+                              {isCheckoutSubmitting ? 'Please wait...' : 'Place Order'}
                             </button>
                           </div>
                         </form>

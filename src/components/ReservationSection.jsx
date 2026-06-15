@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Calendar, Clock, Users, ShieldCheck, HelpCircle, MapPin, ShoppingBag, Truck } from 'lucide-react';
-import { createOrder, createReservation } from '../lib/api';
+import { createOrder, createReservation, getMenuItems } from '../lib/api';
 
-const orderableDishes = [
+const fallbackOrderableDishes = [
   {
     id: 'sig-1',
     name: 'Maha Street Pad Thai',
@@ -124,11 +124,26 @@ export default function ReservationSection({ initialTab = 'reservation', current
   const [orderEmail, setOrderEmail] = useState('');
   const [orderPhone, setOrderPhone] = useState('');
   const [orderQuantities, setOrderQuantities] = useState({
-    'sig-1': 1, // Default with 1 Pad Thai so subtotal is active
+    'sig-1': 1,
     'sig-2': 0,
     'sig-3': 0
   });
   const [isOrderSubmitted, setIsOrderSubmitted] = useState(false);
+  const [orderableDishes, setOrderableDishes] = useState(fallbackOrderableDishes);
+  const [orderError, setOrderError] = useState('');
+  const [isOrderSubmitting, setIsOrderSubmitting] = useState(false);
+
+  useEffect(() => {
+    getMenuItems()
+      .then((items) => {
+        const available = items.filter((item) => item.is_available !== false).slice(0, 3);
+        if (available.length) {
+          setOrderableDishes(available);
+          setOrderQuantities({ [available[0].id]: 1 });
+        }
+      })
+      .catch((error) => console.error('Failed to load orderable dishes.', error));
+  }, []);
 
   useEffect(() => {
     if (currentUser) {
@@ -168,54 +183,55 @@ export default function ReservationSection({ initialTab = 'reservation', current
 
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
-    if (subtotal === 0) return; // Prevent empty orders
+    if (subtotal === 0) return;
     if (orderName && orderEmail && orderPhone && (orderServiceType === 'pickup' || orderAddress)) {
       const orderItems = orderableDishes
         .filter(d => orderQuantities[d.id] > 0)
         .map(d => `${orderQuantities[d.id]}x ${d.name}`)
         .join(', ');
-      const order = {
-        id: 'o-' + Date.now(),
-        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        items: orderItems,
-        total: subtotal,
-        type: orderServiceType === 'delivery' ? 'Delivery' : 'Pickup',
-        status: 'Preparing',
-        customerName: orderName,
-        customerEmail: orderEmail,
-        customerPhone: orderPhone,
-        address: orderServiceType === 'delivery' ? orderAddress : 'Pickup'
-      };
-
+      setOrderError('');
+      setIsOrderSubmitting(true);
       try {
-        await createOrder({
+        const createdOrder = await createOrder({
           user_id: currentUser?.id || null,
           full_name: orderName,
-          name: orderName,
           email: orderEmail,
           phone_number: orderPhone,
-          phone: orderPhone,
           order_type: orderServiceType,
           service_type: orderServiceType,
           pickup_time: orderServiceType === 'pickup' ? orderPickupTime : null,
           delivery_address: orderServiceType === 'delivery' ? orderAddress : null,
           suite_apt: orderSuite,
-          subtotal,
-          discount_amount: 0,
-          total_amount: subtotal,
-          total: subtotal,
-          items: orderItems,
-          status: 'pending'
+          items: orderableDishes
+            .filter((dish) => orderQuantities[dish.id] > 0)
+            .map((dish) => ({
+              menu_item_id: Number(dish.id),
+              quantity: orderQuantities[dish.id],
+              customization: {}
+            }))
         });
-      } catch (error) {
-        console.error('Failed to sync order with backend.', error);
-      }
 
-      setIsOrderSubmitted(true);
-      // Dispatch custom event to add online order to history
-      window.dispatchEvent(new CustomEvent('maha_add_order', {
-        detail: order
-      }));
+        const order = {
+          id: createdOrder.id,
+          date: new Date(createdOrder.created_at || Date.now()).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          items: orderItems,
+          total: Number(createdOrder.total_amount || 0),
+          type: orderServiceType === 'delivery' ? 'Delivery' : 'Pickup',
+          status: 'Pending',
+          customerName: orderName,
+          customerEmail: orderEmail,
+          customerPhone: orderPhone,
+          address: orderServiceType === 'delivery' ? orderAddress : 'Pickup'
+        };
+
+        setIsOrderSubmitted(true);
+        window.dispatchEvent(new CustomEvent('maha_add_order', { detail: order }));
+      } catch (error) {
+        console.error('Failed to create order.', error);
+        setOrderError(error.message || 'Order could not be placed.');
+      } finally {
+        setIsOrderSubmitting(false);
+      }
     }
   };
 
@@ -232,6 +248,7 @@ export default function ReservationSection({ initialTab = 'reservation', current
       'sig-3': 0
     });
     setIsOrderSubmitted(false);
+    setOrderError('');
   };
 
   return (
@@ -763,14 +780,20 @@ export default function ReservationSection({ initialTab = 'reservation', current
                             <button
                               type="button"
                               className={`service-btn ${orderServiceType === 'delivery' ? 'active' : ''}`}
-                              onClick={() => setOrderServiceType('delivery')}
+                              onClick={() => {
+                                setOrderServiceType('delivery');
+                                setOrderError('');
+                              }}
                             >
                               Delivery
                             </button>
                             <button
                               type="button"
                               className={`service-btn ${orderServiceType === 'pickup' ? 'active' : ''}`}
-                              onClick={() => setOrderServiceType('pickup')}
+                              onClick={() => {
+                                setOrderServiceType('pickup');
+                                setOrderError('');
+                              }}
                             >
                               Store Pick Up
                             </button>
@@ -802,7 +825,9 @@ export default function ReservationSection({ initialTab = 'reservation', current
                                     required={orderServiceType === 'delivery'}
                                     placeholder="e.g. 1024 Sukhumvit Rd"
                                     value={orderAddress}
-                                    onChange={(e) => setOrderAddress(e.target.value)}
+                                    onChange={(e) => {
+                                      setOrderAddress(e.target.value);
+                                    }}
                                     className="w-full px-4 py-3 font-sans text-sm bg-white rounded border focus:outline-none transition-all"
                                     style={{
                                       width: '100%',
@@ -824,7 +849,9 @@ export default function ReservationSection({ initialTab = 'reservation', current
                                     type="text"
                                     placeholder="e.g. 4B"
                                     value={orderSuite}
-                                    onChange={(e) => setOrderSuite(e.target.value)}
+                                    onChange={(e) => {
+                                      setOrderSuite(e.target.value);
+                                    }}
                                     className="w-full px-4 py-3 font-sans text-sm bg-white rounded border focus:outline-none transition-all"
                                     style={{
                                       width: '100%',
@@ -921,7 +948,7 @@ export default function ReservationSection({ initialTab = 'reservation', current
                             {/* Subtotal Row */}
                             <div className="order-subtotal-row">
                               <span className="subtotal-label">Subtotal</span>
-                              <span className="subtotal-price">${subtotal}.00</span>
+                              <span className="subtotal-price">${subtotal.toFixed(2)}</span>
                             </div>
                           </div>
                           {subtotal === 0 && (
@@ -994,7 +1021,9 @@ export default function ReservationSection({ initialTab = 'reservation', current
                                 required
                                 placeholder="+1 (555) 000-0000"
                                 value={orderPhone}
-                                onChange={(e) => setOrderPhone(e.target.value)}
+                                onChange={(e) => {
+                                  setOrderPhone(e.target.value);
+                                }}
                                 className="w-full px-4 py-3 font-sans text-sm bg-white rounded border focus:outline-none transition-all"
                                 style={{
                                   width: '100%',
@@ -1011,21 +1040,29 @@ export default function ReservationSection({ initialTab = 'reservation', current
                           </div>
                         </div>
 
+                        {orderError && (
+                          <p role="alert" style={{ color: '#db4455', fontSize: '0.8rem', margin: 0 }}>{orderError}</p>
+                        )}
+
                         {/* Submit Button */}
                         <button 
                           type="submit" 
-                          disabled={subtotal === 0}
+                          disabled={subtotal === 0 || isOrderSubmitting}
                           className="btn-filled w-full justify-center"
                           style={{ 
                             width: '100%', 
                             display: 'flex', 
                             justifyContent: 'center', 
                             marginTop: '1rem',
-                            opacity: subtotal === 0 ? 0.4 : 1,
-                            cursor: subtotal === 0 ? 'not-allowed' : 'pointer'
+                            opacity: subtotal === 0 || isOrderSubmitting ? 0.4 : 1,
+                            cursor: subtotal === 0 || isOrderSubmitting ? 'not-allowed' : 'pointer'
                           }}
                         >
-                          {orderServiceType === 'delivery' ? 'Place Delivery Order' : 'Place Pickup Order'}
+                          {isOrderSubmitting
+                            ? 'Please wait...'
+                            : orderServiceType === 'delivery'
+                              ? 'Place Delivery Order'
+                              : 'Place Pickup Order'}
                         </button>
                       </form>
                     </div>

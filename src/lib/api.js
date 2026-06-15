@@ -32,7 +32,10 @@ export const apiRequest = async (path, options = {}) => {
     : await response.text();
 
   if (!response.ok) {
-    const message = payload?.message || payload || `API request failed: ${response.status}`;
+    const validationMessage = payload?.errors
+      ? Object.values(payload.errors).flat().find(Boolean)
+      : null;
+    const message = validationMessage || payload?.message || payload || `API request failed: ${response.status}`;
     throw new Error(message);
   }
 
@@ -98,6 +101,11 @@ export const createCartItem = (payload) => post('/cart-items', payload);
 
 export const getOrders = (params = {}) => apiRequest(withQuery('/orders', params));
 export const createOrder = (payload) => post('/orders', payload);
+export const updateOrder = (id, payload) => patch(`/orders/${id}`, payload);
+export const deleteOrder = (id) => destroy(`/orders/${id}`);
+export const dispatchOrder = (id) => post(`/orders/${id}/dispatch`, {});
+export const retryOrderDispatch = (id) => post(`/orders/${id}/dispatch/retry`, {});
+export const cancelOrderDelivery = (id) => post(`/orders/${id}/delivery/cancel`, {});
 
 export const getRewards = () => apiRequest('/rewards');
 export const getUserRewards = (userId) => apiRequest(`/rewards/user/${userId}`);
